@@ -1,0 +1,92 @@
+Icon Handling for PyInstaller Applications
+========================================
+
+For proper icon display in Windows applications, icons need to be set in multiple places to ensure they appear correctly in all contexts (executable file, taskbar, and window title bar).
+
+1. Icon File Requirements
+------------------------
+- The ICO file must contain multiple sizes: 16x16, 20x20, 24x24, 32x32, 40x40, 48x48, 64x64, 96x96, 128x128, and 256x256
+- Each size should be in RGBA format with transparency
+- Smaller sizes (16x16, 24x24, 32x32) should be specially optimized for clarity
+- File naming should be consistent across all references
+
+2. File Locations
+----------------
+- Icon file (e.g., LogoSquare3.ico) should be in the same directory as the main Python script
+- The icon must be included in the PyInstaller spec file's data files
+- When compiled, PyInstaller will place the icon in the _internal directory
+
+3. PyInstaller Spec File Configuration
+------------------------------------
+Example spec file configuration:
+```python
+# Get absolute paths
+base_dir = os.path.abspath(os.path.dirname('EEG_recorder.py'))
+icon_file = os.path.join(base_dir, 'LogoSquare3.ico')
+
+# Add to data files
+datas = [(icon_file, '.')]
+
+# Set as application icon
+exe = EXE(
+    ...
+    icon=['LogoSquare3.ico']
+)
+```
+
+4. Python Script Icon Setting
+---------------------------
+In the main application script:
+```python
+if getattr(sys, 'frozen', False):
+    # Running as compiled executable
+    base_path = sys._MEIPASS
+else:
+    # Running as script
+    base_path = os.path.dirname(os.path.abspath(__file__))
+
+icon_path = os.path.join(base_path, "LogoSquare3.ico")
+if os.path.exists(icon_path):
+    # Set window icons
+    self.root.iconbitmap(default=icon_path)
+    self.root.iconbitmap(icon_path)
+    
+    # Set taskbar icon
+    try:
+        import ctypes
+        myappid = u'alphacoherence.eegrecorder.1.0'
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+    except Exception as e:
+        print(f"Failed to set app ID: {e}")
+```
+
+5. Building Process
+-----------------
+1. Place the ICO file in the project directory
+2. Update the spec file with the correct icon path
+3. Update the Python script with the correct icon path
+4. Clean previous builds:
+   ```bash
+   rmdir /s /q build dist
+   ```
+5. Build with PyInstaller:
+   ```bash
+   pyinstaller --clean EEG_recorder.spec
+   ```
+
+6. Troubleshooting
+----------------
+If icons don't appear correctly:
+1. Verify the ICO file contains all required sizes (use verify_ico.py)
+2. Ensure icon paths in both spec file and Python script match exactly
+3. Confirm the icon file is being copied to the _internal directory
+4. Clear the Windows icon cache:
+   ```cmd
+   taskkill /f /im explorer.exe
+   cd /d %userprofile%\AppData\Local\Microsoft\Windows\Explorer
+   del iconcache* /a
+   del thumbcache* /a
+   start explorer.exe
+   ```
+
+Note: Always use consistent file naming and ensure all references to the icon file match exactly across the spec file and Python script.

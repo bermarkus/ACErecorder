@@ -27,7 +27,6 @@ wheels/
 *.swo
 
 # Windows specific
-*.spec
 Thumbs.db
 Desktop.ini
 

@@ -15,12 +15,12 @@ VSVersionInfo(
         StringTable(
           u'040904B0',
           [StringStruct(u'CompanyName', u'AlphaCoherence'),
-           StringStruct(u'FileDescription', u'EEG Recorder'),
+           StringStruct(u'FileDescription', u'ACErecorder'),
            StringStruct(u'FileVersion', u'1.0.0'),
-           StringStruct(u'InternalName', u'EEG_recorder'),
+           StringStruct(u'InternalName', u'ACErecorder'),
            StringStruct(u'LegalCopyright', u'Copyright (c) 2024 AlphaCoherence'),
-           StringStruct(u'OriginalFilename', u'EEG_recorder.exe'),
-           StringStruct(u'ProductName', u'EEG Recorder'),
+           StringStruct(u'OriginalFilename', u'ACErecorder.exe'),
+           StringStruct(u'ProductName', u'ACErecorder'),
            StringStruct(u'ProductVersion', u'1.0.0')])
       ]
     ),

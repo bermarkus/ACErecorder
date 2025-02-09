@@ -1,5 +1,29 @@
 {
     "headset": "19 Channel",
     "com_port": "COM5 - EEG optical dongle",
-    "configurations": {}
+    "configurations": {},
+    "duration_history": [
+        "an1",
+        "an3",
+        "an2"
+    ],
+    "marker_history": [
+        "mr2",
+        "mr3",
+        "mr1"
+    ],
+    "last_duration_labels": [
+        "an1",
+        "an2",
+        "an3",
+        "Duration 1 name",
+        "Duration 1 name"
+    ],
+    "last_marker_labels": [
+        "mr1",
+        "mr2",
+        "mr3",
+        "Marker 1 name",
+        "Marker 1 name"
+    ]
 }

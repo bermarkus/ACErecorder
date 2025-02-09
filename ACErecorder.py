@@ -186,8 +186,8 @@ class ACErecorder:
         logo_width = int(logo_original_width * scale_factor)
         logo_height = int(logo_original_height * scale_factor)
 
-        # Set window size based on logo width
-        self.root.geometry(f"{logo_width}x450")
+        # Set window size based on logo width and increased height for annotations
+        self.root.geometry(f"{logo_width}x750")  # Increased height for bottom margin
         self.root.resizable(False, False)
 
         # Create main frame
@@ -218,7 +218,7 @@ class ACErecorder:
         self.port_mapping = {}
         self.recording_start_time = None
         self.annotations = []
-        self.current_duration_index = None  # Track current duration annotation
+        self.duration_indices = [None] * 5  # Track up to 5 duration annotations
         
         # Ensure EEG files directory exists
         if getattr(sys, 'frozen', False):
@@ -233,7 +233,7 @@ class ACErecorder:
         
         # Initialize variables
         self.status_var = tk.StringVar(value="Initializing...")
-        self.recording_duration_var = tk.StringVar(value="Duration: 0 seconds")  # Renamed from duration_var
+        self.recording_duration_var = tk.StringVar(value="Duration: 0 seconds")  
         self.sample_rate_var = tk.StringVar(value="Sample Rate: -- Hz")
         self.channel_count_var = tk.StringVar(value="Channels: --")
         self.mode_description_var = tk.StringVar(value="")
@@ -267,7 +267,7 @@ class ACErecorder:
         info_frame.grid(row=4, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=5)
         
         # Duration
-        ttk.Label(info_frame, textvariable=self.recording_duration_var).grid(row=0, column=0, padx=5)  # Updated reference
+        ttk.Label(info_frame, textvariable=self.recording_duration_var).grid(row=0, column=0, padx=5)  
         
         # Sample Rate
         ttk.Label(info_frame, textvariable=self.sample_rate_var).grid(row=0, column=1, padx=5)
@@ -282,45 +282,70 @@ class ACErecorder:
         self.record_button = ttk.Button(content_frame, text="Start Recording", command=self.toggle_recording)
         self.record_button.grid(row=5, column=0, columnspan=2, pady=5)
         
-        # Annotation Controls Frame
+        # Annotation Controls Frame with increased padding
         annotation_controls_frame = ttk.LabelFrame(content_frame, text="Annotation Controls")
-        annotation_controls_frame.grid(row=6, column=0, columnspan=2, pady=5, sticky='ew')
+        annotation_controls_frame.grid(row=6, column=0, columnspan=2, pady=(10, 20), sticky='ew')  # Added bottom margin
 
-        # Duration Annotation Section
-        duration_frame = ttk.Frame(annotation_controls_frame)
-        duration_frame.pack(fill='x', pady=2)
-        
-        ttk.Label(duration_frame, text="Duration Annotation:").pack(side='left')
-        
-        self.duration_var = tk.BooleanVar(value=False)
-        self.duration_toggle = ttk.Checkbutton(
-            duration_frame,
-            text="Start/Stop",
-            variable=self.duration_var,
-            command=self.toggle_duration_annotation
-        )
-        self.duration_toggle.pack(side='left', padx=(5,5))
-        
-        self.duration_entry = ttk.Entry(duration_frame, width=25)
-        self.duration_entry.pack(side='left')
-        self.duration_entry.insert(0, 'Duration name')
+        # Load annotation history from settings
+        self.duration_history = self.settings.get("duration_history", [])
+        self.marker_history = self.settings.get("marker_history", [])
+        self.last_duration_labels = self.settings.get("last_duration_labels", ["Duration 1 name"] * 5)
+        self.last_marker_labels = self.settings.get("last_marker_labels", ["Marker 1 name"] * 5)
 
-        # Instant Marker Section
-        marker_frame = ttk.Frame(annotation_controls_frame)
-        marker_frame.pack(fill='x', pady=2)
+        # Duration Annotations Section with padding
+        duration_section = ttk.LabelFrame(annotation_controls_frame, text="Duration Annotations")
+        duration_section.pack(fill='x', pady=5, padx=5)
         
-        ttk.Label(marker_frame, text="Instant Marker:").pack(side='left')
+        # Create 5 duration annotation controls with padding
+        self.duration_vars = []
+        self.duration_entries = []
+        for i in range(5):
+            duration_frame = ttk.Frame(duration_section)
+            duration_frame.pack(fill='x', pady=3)
+            
+            duration_var = tk.BooleanVar(value=False)
+            self.duration_vars.append(duration_var)
+            
+            duration_toggle = ttk.Checkbutton(
+                duration_frame,
+                text=f"Duration {i+1}",
+                variable=duration_var,
+                command=lambda idx=i: self.toggle_duration_annotation(idx)
+            )
+            duration_toggle.pack(side='left', padx=10)
+            
+            # Create entry with dropdown for history
+            duration_entry = ttk.Combobox(duration_frame, width=37)
+            duration_entry.pack(side='left', padx=10)
+            if self.duration_history:
+                duration_entry['values'] = self.duration_history
+            duration_entry.set(self.last_duration_labels[i])
+            self.duration_entries.append(duration_entry)
+
+        # Instant Markers Section
+        marker_section = ttk.LabelFrame(annotation_controls_frame, text="Instant Markers")
+        marker_section.pack(fill='x', pady=5, padx=5)
         
-        self.marker_button = ttk.Button(
-            marker_frame,
-            text="Add Marker",
-            command=self.add_instant_marker
-        )
-        self.marker_button.pack(side='left', padx=(5,5))
-        
-        self.marker_entry = ttk.Entry(marker_frame, width=25)
-        self.marker_entry.pack(side='left')
-        self.marker_entry.insert(0, 'Marker name')
+        # Create 5 instant marker controls
+        self.marker_entries = []
+        for i in range(5):
+            marker_frame = ttk.Frame(marker_section)
+            marker_frame.pack(fill='x', pady=3)
+            
+            marker_button = ttk.Button(
+                marker_frame,
+                text=f"Marker {i+1}",
+                command=lambda idx=i: self.add_instant_marker(idx)
+            )
+            marker_button.pack(side='left', padx=10)
+            
+            # Create entry with dropdown for history
+            marker_entry = ttk.Combobox(marker_frame, width=37)
+            marker_entry.pack(side='left', padx=10)
+            if self.marker_history:
+                marker_entry['values'] = self.marker_history
+            marker_entry.set(self.last_marker_labels[i])
+            self.marker_entries.append(marker_entry)
         
         # Configure grid
         content_frame.columnconfigure(1, weight=1)
@@ -438,7 +463,7 @@ class ACErecorder:
 
     def generate_filename(self):
         """Generate filename with date-time prefix"""
-        current_time = datetime.now().strftime("%d-%m-%Y_%H-%M-%S")  # Added seconds with %S
+        current_time = datetime.now().strftime("%d-%m-%Y_%H-%M-%S")  
         suffix = self.filename_var.get().strip()
         if suffix:
             filename = f"{current_time}_{suffix}.bdf"
@@ -463,10 +488,10 @@ class ACErecorder:
     def update_duration(self):
         if self.recording:
             duration = time.time() - self.recording_start_time
-            self.recording_duration_var.set(f"{duration:.0f} seconds")  # Updated reference
+            self.recording_duration_var.set(f"{duration:.0f} seconds")  
             self.root.after(1000, self.update_duration)
         else:
-            self.recording_duration_var.set("0 seconds")  # Updated reference
+            self.recording_duration_var.set("0 seconds")  
 
     def start_recording(self):
         if not isinstance(self.recording, bool):
@@ -693,7 +718,7 @@ class ACErecorder:
             self.status_var.set("Not Recording")
             self.filename_entry.config(state="normal")
             self.port_combo.config(state="readonly")
-            self.recording_duration_var.set("0 seconds")  # Updated reference
+            self.recording_duration_var.set("0 seconds")  
             messagebox.showinfo("Success", f"Recording saved to {self.output_file}")
 
     def load_settings(self):
@@ -1269,14 +1294,14 @@ class ACErecorder:
             self.settings["com_port"] = selected_port
             self.save_settings()
 
-    def add_instant_marker(self):
+    def add_instant_marker(self, index):
         """Add an instant marker annotation with no duration"""
         if not self.recording:
             messagebox.showerror("Error", "Start recording first")
             return
             
-        annotation_name = self.marker_entry.get().strip()
-        if not annotation_name or annotation_name == 'Marker name':
+        annotation_name = self.marker_entries[index].get().strip()
+        if not annotation_name or annotation_name == f'Marker {index+1} name':
             messagebox.showerror("Error", "Valid annotation name required")
             return
         
@@ -1285,21 +1310,38 @@ class ACErecorder:
         self.annotations.append({
             'onset': now,
             'duration': 0.0,
-            'description': f"[MARKER] {annotation_name}"
+            'description': annotation_name
         })
-        print(f"\n=== INSTANT MARKER: '{annotation_name}' @ {now:.1f}s ===")
+        
+        # Update marker history and last used label
+        if annotation_name not in self.marker_history:
+            self.marker_history.append(annotation_name)
+            # Keep only the last 10 unique entries
+            self.marker_history = self.marker_history[-10:]
+            # Update all marker entry dropdowns
+            for entry in self.marker_entries:
+                entry['values'] = self.marker_history
+        
+        # Save the last used label for this specific marker
+        self.last_marker_labels[index] = annotation_name
+        # Save to settings
+        self.settings["marker_history"] = self.marker_history
+        self.settings["last_marker_labels"] = self.last_marker_labels
+        self.save_settings()
+            
+        print(f"\n=== INSTANT MARKER {index+1}: '{annotation_name}' @ {now:.1f}s ===")
 
-    def toggle_duration_annotation(self):
-        if self.duration_var.get():
+    def toggle_duration_annotation(self, index):
+        if self.duration_vars[index].get():
             if not self.recording or self.recording_start_time is None:
-                self.duration_var.set(False)
+                self.duration_vars[index].set(False)
                 messagebox.showerror("Error", "Recording not properly initialized")
                 return
             
-            annotation_name = self.duration_entry.get().strip()
-            if not annotation_name or annotation_name == 'Duration name':
+            annotation_name = self.duration_entries[index].get().strip()
+            if not annotation_name or annotation_name == f'Duration {index+1} name':
                 messagebox.showerror("Error", "Valid annotation name required")
-                self.duration_var.set(False)
+                self.duration_vars[index].set(False)
                 return
             
             # Record start time and print status
@@ -1307,23 +1349,40 @@ class ACErecorder:
             self.annotations.append({
                 'onset': start_time,
                 'duration': 0.0,
-                'description': f"[DURATION] {annotation_name}"  # Add DURATION tag
+                'description': annotation_name
             })
-            self.current_duration_index = len(self.annotations) - 1  # Track the index
-            print(f"\n=== DURATION START: {annotation_name} @ {start_time:.1f}s ===")
+            
+            # Update duration history and last used label
+            if annotation_name not in self.duration_history:
+                self.duration_history.append(annotation_name)
+                # Keep only the last 10 unique entries
+                self.duration_history = self.duration_history[-10:]
+                # Update all duration entry dropdowns
+                for entry in self.duration_entries:
+                    entry['values'] = self.duration_history
+            
+            # Save the last used label for this specific duration
+            self.last_duration_labels[index] = annotation_name
+            # Save to settings
+            self.settings["duration_history"] = self.duration_history
+            self.settings["last_duration_labels"] = self.last_duration_labels
+            self.save_settings()
+            
+            self.duration_indices[index] = len(self.annotations) - 1
+            print(f"\n=== DURATION {index+1} START: {annotation_name} @ {start_time:.1f}s ===")
         else:
             # End duration annotation
-            if self.current_duration_index is not None and self.current_duration_index < len(self.annotations):
+            if self.duration_indices[index] is not None and self.duration_indices[index] < len(self.annotations):
                 # Calculate final duration and print status
                 now = time.time() - self.recording_start_time
-                duration_annotation = self.annotations[self.current_duration_index]
+                duration_annotation = self.annotations[self.duration_indices[index]]
                 duration_annotation['duration'] = now - duration_annotation['onset']
-                print(f"\n=== DURATION END: {duration_annotation['description']} "
+                print(f"\n=== DURATION {index+1} END: {duration_annotation['description']} "
                       f"({duration_annotation['duration']:.1f}s) @ {now:.1f}s ===")
-                self.current_duration_index = None  # Clear the tracking
+                self.duration_indices[index] = None  # Clear the tracking
             else:
-                print("\nWarning: No active duration annotation to end")
-                self.duration_var.set(False)
+                print(f"\nWarning: No active duration annotation to end for Duration {index+1}")
+                self.duration_vars[index].set(False)
 
 if __name__ == "__main__":
     try:

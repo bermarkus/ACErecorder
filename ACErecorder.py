@@ -17,6 +17,7 @@ import traceback
 import webbrowser
 import pyedflib
 import copy
+import winsound  # For playing bell sound
 
 # Try to import MNE-related packages with error handling
 try:
@@ -179,15 +180,15 @@ class ACErecorder:
         except Exception as e:
             print(f"Could not set icon: {e}")
 
-        # Calculate scaled dimensions (60% of original)
+        # Calculate scaled dimensions (85% of original)
         logo_original_width = 900
         logo_original_height = 97
-        scale_factor = 0.60
+        scale_factor = 0.85  # Increased to 0.85 for wider window
         logo_width = int(logo_original_width * scale_factor)
         logo_height = int(logo_original_height * scale_factor)
 
         # Set window size based on logo width and increased height for annotations
-        self.root.geometry(f"{logo_width}x750")  # Increased height for bottom margin
+        self.root.geometry(f"{logo_width}x750")  
         self.root.resizable(False, False)
 
         # Create main frame
@@ -219,6 +220,10 @@ class ACErecorder:
         self.recording_start_time = None
         self.annotations = []
         self.duration_indices = [None] * 5  # Track up to 5 duration annotations
+        self.duration_timers = [None] * 5  # Track timer jobs for auto-stop
+        self.bell_states = [tk.BooleanVar(value=True) for _ in range(5)]  # Bell enabled by default
+        self.countdown_vars = [tk.StringVar(value="") for _ in range(5)]  # For countdown display
+        self.countdown_timers = [None] * 5  # Track countdown update jobs
         
         # Ensure EEG files directory exists
         if getattr(sys, 'frozen', False):
@@ -284,7 +289,7 @@ class ACErecorder:
         
         # Annotation Controls Frame with increased padding
         annotation_controls_frame = ttk.LabelFrame(content_frame, text="Annotation Controls")
-        annotation_controls_frame.grid(row=6, column=0, columnspan=2, pady=(10, 20), sticky='ew')  # Added bottom margin
+        annotation_controls_frame.grid(row=6, column=0, columnspan=2, pady=(10, 20), sticky='ew')  
 
         # Load annotation history from settings
         self.duration_history = self.settings.get("duration_history", [])
@@ -299,6 +304,7 @@ class ACErecorder:
         # Create 5 duration annotation controls with padding
         self.duration_vars = []
         self.duration_entries = []
+        self.duration_timer_entries = []
         for i in range(5):
             duration_frame = ttk.Frame(duration_section)
             duration_frame.pack(fill='x', pady=3)
@@ -315,13 +321,45 @@ class ACErecorder:
             duration_toggle.pack(side='left', padx=10)
             
             # Create entry with dropdown for history
-            duration_entry = ttk.Combobox(duration_frame, width=37)
-            duration_entry.pack(side='left', padx=10)
+            duration_entry = ttk.Combobox(duration_frame, width=37)  # Back to original width
+            duration_entry.pack(side='left', padx=10)  # Back to original padding
             if self.duration_history:
                 duration_entry['values'] = self.duration_history
             duration_entry.set(self.last_duration_labels[i])
             self.duration_entries.append(duration_entry)
+            
+            # Add timer entry fields with compact spacing
+            timer_frame = ttk.Frame(duration_frame)
+            timer_frame.pack(side='left', padx=10)
+            
+            ttk.Label(timer_frame, text="Timer:").pack(side='left', padx=(0,5))
+            minutes_entry = ttk.Entry(timer_frame, width=3)
+            minutes_entry.pack(side='left', padx=2)
+            ttk.Label(timer_frame, text="m").pack(side='left', padx=(0,5))
+            
+            seconds_entry = ttk.Entry(timer_frame, width=3)
+            seconds_entry.pack(side='left', padx=2)
+            ttk.Label(timer_frame, text="s").pack(side='left', padx=(0,10))
+            
+            # Add bell toggle with compact spacing
+            bell_frame = ttk.Frame(duration_frame)
+            bell_frame.pack(side='left', padx=10)
+            
+            bell_toggle = ttk.Checkbutton(
+                bell_frame,
+                text="🔔",
+                variable=self.bell_states[i],
+                style='Bell.TCheckbutton'
+            )
+            bell_toggle.pack(side='left', padx=5)
 
+            # Add countdown display
+            countdown_label = ttk.Label(duration_frame, textvariable=self.countdown_vars[i], width=8)
+            countdown_label.pack(side='left', padx=5)
+            
+            # Store timer entries
+            self.duration_timer_entries.append((minutes_entry, seconds_entry))
+        
         # Instant Markers Section
         marker_section = ttk.LabelFrame(annotation_controls_frame, text="Instant Markers")
         marker_section.pack(fill='x', pady=5, padx=5)
@@ -339,9 +377,9 @@ class ACErecorder:
             )
             marker_button.pack(side='left', padx=10)
             
-            # Create entry with dropdown for history
-            marker_entry = ttk.Combobox(marker_frame, width=37)
-            marker_entry.pack(side='left', padx=10)
+            # Create entry with dropdown for history for markers
+            marker_entry = ttk.Combobox(marker_frame, width=37)  # Back to original width
+            marker_entry.pack(side='left', padx=10)  # Back to original padding
             if self.marker_history:
                 marker_entry['values'] = self.marker_history
             marker_entry.set(self.last_marker_labels[i])
@@ -1344,6 +1382,24 @@ class ACErecorder:
                 self.duration_vars[index].set(False)
                 return
             
+            # Get timer values if set
+            minutes_entry, seconds_entry = self.duration_timer_entries[index]
+            minutes = minutes_entry.get().strip()
+            seconds = seconds_entry.get().strip()
+            
+            timer_duration = None
+            if minutes or seconds:  # If either field has a value
+                try:
+                    minutes = int(minutes) if minutes else 0
+                    seconds = int(seconds) if seconds else 0
+                    if minutes < 0 or seconds < 0 or seconds >= 60:
+                        raise ValueError("Invalid time values")
+                    timer_duration = minutes * 60 + seconds
+                except ValueError:
+                    messagebox.showerror("Error", "Invalid timer values. Minutes should be ≥0, seconds should be 0-59")
+                    self.duration_vars[index].set(False)
+                    return
+            
             # Record start time and print status
             start_time = time.time() - self.recording_start_time
             self.annotations.append({
@@ -1355,34 +1411,100 @@ class ACErecorder:
             # Update duration history and last used label
             if annotation_name not in self.duration_history:
                 self.duration_history.append(annotation_name)
-                # Keep only the last 10 unique entries
                 self.duration_history = self.duration_history[-10:]
-                # Update all duration entry dropdowns
                 for entry in self.duration_entries:
                     entry['values'] = self.duration_history
             
             # Save the last used label for this specific duration
             self.last_duration_labels[index] = annotation_name
-            # Save to settings
             self.settings["duration_history"] = self.duration_history
             self.settings["last_duration_labels"] = self.last_duration_labels
             self.save_settings()
             
             self.duration_indices[index] = len(self.annotations) - 1
-            print(f"\n=== DURATION {index+1} START: {annotation_name} @ {start_time:.1f}s ===")
-        else:
-            # End duration annotation
-            if self.duration_indices[index] is not None and self.duration_indices[index] < len(self.annotations):
-                # Calculate final duration and print status
-                now = time.time() - self.recording_start_time
-                duration_annotation = self.annotations[self.duration_indices[index]]
-                duration_annotation['duration'] = now - duration_annotation['onset']
-                print(f"\n=== DURATION {index+1} END: {duration_annotation['description']} "
-                      f"({duration_annotation['duration']:.1f}s) @ {now:.1f}s ===")
-                self.duration_indices[index] = None  # Clear the tracking
+            
+            # Set up timer if duration specified
+            if timer_duration is not None:
+                print(f"\n=== DURATION {index+1} START: {annotation_name} @ {start_time:.1f}s (Timer: {minutes}m {seconds}s) ===")
+                # Cancel any existing timer
+                if self.duration_timers[index]:
+                    self.root.after_cancel(self.duration_timers[index])
+                # Schedule auto-stop
+                end_time = time.time() + timer_duration
+                self.duration_timers[index] = self.root.after(
+                    int(timer_duration * 1000),  # Convert to milliseconds
+                    lambda: self.auto_stop_duration(index)
+                )
+                # Start countdown display
+                self.update_countdown(index, end_time)
             else:
-                print(f"\nWarning: No active duration annotation to end for Duration {index+1}")
-                self.duration_vars[index].set(False)
+                print(f"\n=== DURATION {index+1} START: {annotation_name} @ {start_time:.1f}s ===")
+                self.countdown_vars[index].set("")  # Clear any previous countdown
+        else:
+            self.stop_duration(index)
+
+    def update_countdown(self, index, end_time):
+        """Update the countdown display for a duration annotation"""
+        if self.duration_vars[index].get():  # Only if still running
+            now = time.time()
+            remaining = end_time - now
+            
+            if remaining > 0:
+                minutes = int(remaining // 60)
+                seconds = int(remaining % 60)
+                self.countdown_vars[index].set(f"{minutes:02d}:{seconds:02d}")
+                
+                # Schedule next update
+                self.countdown_timers[index] = self.root.after(1000, 
+                    lambda: self.update_countdown(index, end_time))
+            else:
+                self.countdown_vars[index].set("")
+                self.countdown_timers[index] = None
+
+    def auto_stop_duration(self, index):
+        """Automatically stop a duration annotation when its timer expires"""
+        if self.duration_vars[index].get():  # Only if still running
+            # First call stop_duration to properly close the annotation
+            self.stop_duration(index)
+            # Then update the checkbox state
+            self.duration_vars[index].set(False)
+            self.duration_timers[index] = None
+            
+            # Play bell sound if enabled for this duration
+            if self.bell_states[index].get():
+                self.play_bell_sound()
+
+    def play_bell_sound(self):
+        """Play a simple bell sound using winsound"""
+        try:
+            winsound.Beep(1000, 100)  # 1000Hz for 100ms
+            time.sleep(0.1)  # Small pause between beeps
+            winsound.Beep(1000, 100)  # Second beep
+        except:
+            print("\nCould not play bell sound")
+
+    def stop_duration(self, index):
+        """Stop a duration annotation (called from toggle or auto-stop)"""
+        if self.duration_indices[index] is not None and self.duration_indices[index] < len(self.annotations):
+            # Calculate final duration and print status
+            now = time.time() - self.recording_start_time
+            duration_annotation = self.annotations[self.duration_indices[index]]
+            duration_annotation['duration'] = now - duration_annotation['onset']
+            print(f"\n=== DURATION {index+1} END: {duration_annotation['description']} "
+                  f"({duration_annotation['duration']:.1f}s) @ {now:.1f}s ===")
+            self.duration_indices[index] = None
+            
+            # Cancel any existing timers
+            if self.duration_timers[index]:
+                self.root.after_cancel(self.duration_timers[index])
+                self.duration_timers[index] = None
+            if self.countdown_timers[index]:
+                self.root.after_cancel(self.countdown_timers[index])
+                self.countdown_timers[index] = None
+            self.countdown_vars[index].set("")  # Clear countdown display
+        else:
+            print(f"\nWarning: No active duration annotation to end for Duration {index+1}")
+            self.duration_vars[index].set(False)
 
 if __name__ == "__main__":
     try:

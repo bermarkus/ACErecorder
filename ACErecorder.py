@@ -188,7 +188,7 @@ class ACErecorder:
         logo_height = int(logo_original_height * scale_factor)
 
         # Set window size based on logo width and increased height for annotations
-        self.root.geometry(f"{logo_width}x750")  
+        self.root.geometry(f"{logo_width}x800")  # Adjusted height to 800 for better fit
         self.root.resizable(False, False)
 
         # Create main frame
@@ -237,7 +237,7 @@ class ACErecorder:
         os.makedirs(self.eeg_dir, exist_ok=True)
         
         # Initialize variables
-        self.status_var = tk.StringVar(value="Initializing...")
+        self.status_var = tk.StringVar(value="Ready to record")  
         self.recording_duration_var = tk.StringVar(value="Duration: 0 seconds")  
         self.sample_rate_var = tk.StringVar(value="Sample Rate: -- Hz")
         self.channel_count_var = tk.StringVar(value="Channels: --")
@@ -263,9 +263,13 @@ class ACErecorder:
         self.port_combo.grid(row=2, column=1, pady=5, sticky=(tk.W, tk.E))
         self.port_combo.bind('<<ComboboxSelected>>', lambda e: self.on_port_change())
         
-        # Status label
-        self.status_label = ttk.Label(content_frame, textvariable=self.status_var, wraplength=380)
-        self.status_label.grid(row=3, column=0, columnspan=2, pady=10, sticky='w')
+        # Status label with increased wraplength and fixed height
+        self.status_var = tk.StringVar(value="Ready to record")  
+        status_frame = ttk.Frame(content_frame, height=50)  # Fixed height container
+        status_frame.grid(row=3, column=0, columnspan=2, pady=10, sticky='ew')
+        status_frame.grid_propagate(False)  # Prevent frame from shrinking
+        self.status_label = ttk.Label(status_frame, textvariable=self.status_var, wraplength=600)  # Increased wraplength
+        self.status_label.grid(row=0, column=0, sticky='w')
         
         # Recording info frame
         info_frame = ttk.LabelFrame(content_frame, text="Recording Info", padding="5")
@@ -399,6 +403,9 @@ class ACErecorder:
         
         # Refresh COM ports every 5 seconds
         self.root.after(5000, self.periodic_port_update)
+        
+        # Bind window close event
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
 
     def update_channel_info(self):
         """Update channel count and mode info"""
@@ -480,14 +487,14 @@ class ACErecorder:
                 # No saved port, use first available
                 self.port_var.set(descriptions[0])
             
-            self.status_var.set("Ready to record")
+            self.status_var.set("Ready to record")  
             self.record_button.config(state="normal")
         else:
             # No compatible devices found
             self.port_combo['values'] = []
             self.port_mapping = {}
             self.port_var.set('')
-            self.status_var.set("No compatible devices connected")
+            self.status_var.set("No compatible devices connected")  
             self.record_button.config(state="disabled")
 
     def periodic_port_update(self):
@@ -517,11 +524,13 @@ class ACErecorder:
                 self.recording = True
             except Exception as e:
                 self.recording = False
+                self.status_var.set(f"Recording error: {str(e)}")  
                 messagebox.showerror("Error", f"Failed to start recording: {str(e)}")
         else:
             self.stop_recording()
             self.record_button.config(text="Start Recording")
             self.recording = False
+            self.status_var.set("Ready to record")  
 
     def update_duration(self):
         if self.recording:
@@ -594,7 +603,7 @@ class ACErecorder:
             self.update_duration()
             
             # Update UI
-            self.status_var.set(f"Recording to {self.output_file}...")
+            self.status_var.set(f"Recording to {self.output_file}...")  
             self.filename_entry.config(state="disabled")
             self.port_combo.config(state="disabled")
             
@@ -605,144 +614,160 @@ class ACErecorder:
 
     def record_data(self):
         """Record data from the board"""
-        mode = self.channel_mode_var.get()
-        output_channels = self.custom_configs[mode]["output_order"]
-        
-        # Ensure we have output channels defined
-        if not output_channels:
-            messagebox.showerror("Error", "No channels configured. Please configure channels in File > Configure Custom Headset")
-            self.recording = False
-            return
-            
-        # Get the input channels based on mode
-        input_order = self.custom_configs[mode]["input_order"]
-        
-        # Create mapping from input to output channels
-        channel_mapping = {}  # Maps output index to input index
-        for out_idx, out_channel in enumerate(output_channels):
-            if out_channel in input_order:
-                channel_mapping[out_idx] = input_order.index(out_channel)
-        
-        # Initialize buffer for EDF file
-        buffer = np.zeros((len(output_channels), self.sample_rate))
-        buffer_count = 0
-        no_data_count = 0
-        
-        # Get indices of EEG channels from board
-        self.eeg_channels = self.board.get_eeg_channels(self.board.board_id)
-        
-        # Create EDF file
         try:
-            f = pyedflib.EdfWriter(self.output_file, len(output_channels), file_type=pyedflib.FILETYPE_BDFPLUS)
+            mode = self.channel_mode_var.get()
+            if mode not in self.custom_configs:
+                self.recording = False
+                messagebox.showerror("Error", f"Invalid configuration mode: {mode}")
+                return
+                
+            config = self.custom_configs[mode]
+            if "input_order" not in config or "output_order" not in config:
+                self.recording = False
+                messagebox.showerror("Error", f"Invalid configuration format for mode: {mode}")
+                return
             
-            # Set header fields
-            f.setTechnician('X')
-            f.setRecordingAdditional('X')
-            f.setPatientName('X')
-            f.setPatientCode('X')
-            f.setPatientAdditional('X')
-            f.setAdmincode('X')
-            f.setEquipment('FreeEEG32')
-            f.setSignalHeaders([{
-                'label': ch_name,
-                'dimension': 'uV',
-                'sample_rate': self.sample_rate,
-                'physical_min': -187500,
-                'physical_max': 187500,
-                'digital_min': -8388608,
-                'digital_max': 8388607,
-                'transducer': '',
-                'prefilter': ''
-            } for ch_name in output_channels])
+            output_channels = config["output_order"]
+            input_order = config["input_order"]
             
-            while self.recording:
-                try:
-                    data = self.board.get_board_data()
-                    new_samples = data.shape[1]
-                    
-                    # Check if we're receiving data
-                    if new_samples == 0:
-                        no_data_count += 1
-                        if no_data_count >= 100:  # After ~1 second of no data (assuming 10ms sleep)
-                            self.recording = False
-                            messagebox.showerror("Error", "Lost connection with the optical dongle.\nRecording has been stopped.")
-                            break
-                        time.sleep(0.01)
-                        continue
-                    else:
-                        no_data_count = 0  # Reset counter when data is received
-                    
-                    if buffer_count + new_samples >= self.sample_rate:
-                        samples_to_fill = self.sample_rate - buffer_count
+            # Ensure we have output channels defined
+            if not output_channels:
+                self.recording = False
+                messagebox.showerror("Error", "No channels configured")
+                return
+            
+            # Get the input channels based on mode
+            channel_mapping = {}  # Maps output index to input index
+            for out_idx, out_channel in enumerate(output_channels):
+                if out_channel in input_order:
+                    channel_mapping[out_idx] = input_order.index(out_channel)
+            
+            # Initialize buffer for EDF file
+            buffer = np.zeros((len(output_channels), self.sample_rate))
+            buffer_count = 0
+            no_data_count = 0
+            
+            # Get indices of EEG channels from board
+            self.eeg_channels = self.board.get_eeg_channels(self.board.board_id)
+            
+            # Create EDF file
+            try:
+                f = pyedflib.EdfWriter(self.output_file, len(output_channels), file_type=pyedflib.FILETYPE_BDFPLUS)
+                
+                # Set header fields
+                f.setTechnician('X')
+                f.setRecordingAdditional('X')
+                f.setPatientName('X')
+                f.setPatientCode('X')
+                f.setPatientAdditional('X')
+                f.setAdmincode('X')
+                f.setEquipment('FreeEEG32')
+                f.setSignalHeaders([{
+                    'label': ch_name,
+                    'dimension': 'uV',
+                    'sample_rate': self.sample_rate,
+                    'physical_min': -187500,
+                    'physical_max': 187500,
+                    'digital_min': -8388608,
+                    'digital_max': 8388607,
+                    'transducer': '',
+                    'prefilter': ''
+                } for ch_name in output_channels])
+                
+                while self.recording:
+                    try:
+                        data = self.board.get_board_data()
+                        new_samples = data.shape[1]
                         
-                        # Map input channels to output channels
-                        for out_idx, in_idx in channel_mapping.items():
-                            if in_idx < len(self.eeg_channels):
-                                buffer[out_idx, buffer_count:] = data[self.eeg_channels[in_idx], :samples_to_fill]
+                        # Check if we're receiving data
+                        if new_samples == 0:
+                            no_data_count += 1
+                            if no_data_count >= 100:  # After ~1 second of no data (assuming 10ms sleep)
+                                self.recording = False
+                                messagebox.showerror("Error", "Lost connection with the optical dongle.\nRecording has been stopped.")
+                                break
+                            time.sleep(0.01)
+                            continue
+                        else:
+                            no_data_count = 0  # Reset counter when data is received
                         
-                        # Calculate coherence for 2 Channel mode
-                        if mode == "2 Channel":
-                            # Get Fp1 and Fp2 data
-                            fp1_idx = output_channels.index("Fp1")
-                            fp2_idx = output_channels.index("Fp2")
-                            coherence_idx = output_channels.index("Coherence")
+                        if buffer_count + new_samples >= self.sample_rate:
+                            samples_to_fill = self.sample_rate - buffer_count
                             
-                            # Prepare data for coherence calculation
-                            coherence_data = np.vstack((buffer[fp1_idx, :], buffer[fp2_idx, :]))
-                            
-                            # Calculate coherence
-                            try:
-                                coherence_value = compute_coherence(coherence_data, self.sample_rate)
-                                # Fill the coherence buffer with the computed value
-                                buffer[coherence_idx, :] = coherence_value
-                            except Exception as e:
-                                print(f"Coherence calculation error: {e}")
-                                buffer[coherence_idx, :] = 0
-                        
-                        # Write the data
-                        try:
-                            f.writeSamples(buffer)
-                            print(f"Wrote {self.sample_rate} samples to file")
-                        except Exception as e:
-                            print(f"Error writing samples: {e}")
-                            traceback.print_exc()
-                        
-                        # Handle remaining data
-                        if new_samples > samples_to_fill:
+                            # Map input channels to output channels
                             for out_idx, in_idx in channel_mapping.items():
                                 if in_idx < len(self.eeg_channels):
-                                    buffer[out_idx, :new_samples-samples_to_fill] = data[self.eeg_channels[in_idx], samples_to_fill:]
-                            buffer_count = new_samples - samples_to_fill
+                                    buffer[out_idx, buffer_count:] = data[self.eeg_channels[in_idx], :samples_to_fill]
+                            
+                            # Calculate coherence for 2 Channel mode
+                            if mode == "2 Channel":
+                                # Get Fp1 and Fp2 data
+                                fp1_idx = output_channels.index("Fp1")
+                                fp2_idx = output_channels.index("Fp2")
+                                coherence_idx = output_channels.index("Coherence")
+                                
+                                # Prepare data for coherence calculation
+                                coherence_data = np.vstack((buffer[fp1_idx, :], buffer[fp2_idx, :]))
+                                
+                                # Calculate coherence
+                                try:
+                                    coherence_value = compute_coherence(coherence_data, self.sample_rate)
+                                    # Fill the coherence buffer with the computed value
+                                    buffer[coherence_idx, :] = coherence_value
+                                except Exception as e:
+                                    print(f"Coherence calculation error: {e}")
+                                    buffer[coherence_idx, :] = 0
+                            
+                            # Write the data
+                            try:
+                                f.writeSamples(buffer)
+                                print(f"Wrote {self.sample_rate} samples to file")
+                            except Exception as e:
+                                print(f"Error writing samples: {e}")
+                                traceback.print_exc()
+                            
+                            # Handle remaining data
+                            if new_samples > samples_to_fill:
+                                for out_idx, in_idx in channel_mapping.items():
+                                    if in_idx < len(self.eeg_channels):
+                                        buffer[out_idx, :new_samples-samples_to_fill] = data[self.eeg_channels[in_idx], samples_to_fill:]
+                                buffer_count = new_samples - samples_to_fill
+                            else:
+                                buffer_count = 0
+                                buffer.fill(0)
                         else:
-                            buffer_count = 0
-                            buffer.fill(0)
-                    else:
-                        # Map input channels to output channels
-                        for out_idx, in_idx in channel_mapping.items():
-                            if in_idx < len(self.eeg_channels):
-                                buffer[out_idx, buffer_count:buffer_count+new_samples] = data[self.eeg_channels[in_idx], :]
-                        buffer_count += new_samples
-                    
-                    time.sleep(0.01)
-                except Exception as e:
-                    print(f"Recording error: {str(e)}")
-                    traceback.print_exc()
-                    messagebox.showerror("Error", f"Recording error: {str(e)}")
-                    break
+                            # Map input channels to output channels
+                            for out_idx, in_idx in channel_mapping.items():
+                                if in_idx < len(self.eeg_channels):
+                                    buffer[out_idx, buffer_count:buffer_count+new_samples] = data[self.eeg_channels[in_idx], :]
+                            buffer_count += new_samples
+                        
+                        time.sleep(0.01)
+                    except Exception as e:
+                        print(f"Recording error: {str(e)}")
+                        traceback.print_exc()
+                        messagebox.showerror("Error", f"Recording error: {str(e)}")
+                        break
+            except Exception as e:
+                print(f"Error writing EDF file: {e}")
+                traceback.print_exc()
+                messagebox.showerror("Error", f"Error writing EDF file: {str(e)}")
+                self.recording = False
+            
+            # Save annotations to BDF
+            if self.annotations:
+                for ann in self.annotations:
+                    f.writeAnnotation(
+                        onset_in_seconds=ann['onset'],
+                        duration_in_seconds=ann['duration'],
+                        description=ann['description']
+                    )
+
         except Exception as e:
-            print(f"Error writing EDF file: {e}")
+            print(f"Error in record_data: {e}")
             traceback.print_exc()
-            messagebox.showerror("Error", f"Error writing EDF file: {str(e)}")
+            messagebox.showerror("Error", f"Error in record_data: {str(e)}")
             self.recording = False
-        
-        # Save annotations to BDF
-        if self.annotations:
-            for ann in self.annotations:
-                f.writeAnnotation(
-                    onset_in_seconds=ann['onset'],
-                    duration_in_seconds=ann['duration'],
-                    description=ann['description']
-                )
 
     def stop_recording(self):
         if self.recording:
@@ -753,7 +778,7 @@ class ACErecorder:
             self.board.release_session()
             self.board = None
             
-            self.status_var.set("Not Recording")
+            self.status_var.set("Not Recording")  
             self.filename_entry.config(state="normal")
             self.port_combo.config(state="readonly")
             self.recording_duration_var.set("0 seconds")  
@@ -882,6 +907,22 @@ class ACErecorder:
         current_mode = self.channel_mode_var.get()
         if current_mode not in CHANNEL_CONFIGS:
             self.channel_mode_var.set("2 Channel Headset")
+        self.update_channel_info()
+
+    def refresh_channel_mode_menu(self):
+        """Refresh the channel mode combo box with updated configurations"""
+        current_mode = self.channel_mode_var.get()
+        
+        # Update combobox values
+        self.channel_mode_combo['values'] = list(self.custom_configs.keys())
+        
+        # Try to keep the current selection if it still exists
+        if current_mode in self.custom_configs:
+            self.channel_mode_var.set(current_mode)
+        elif self.custom_configs:
+            self.channel_mode_var.set(list(self.custom_configs.keys())[0])
+        
+        # Update channel info display
         self.update_channel_info()
 
     def manage_configurations(self):
@@ -1174,108 +1215,40 @@ class ACErecorder:
         blocks_frame.columnconfigure(1, weight=1)
 
         def save_custom_config():
-            # Get configuration name
-            config_name = name_var.get().strip()
-            if not config_name:
-                messagebox.showerror("Error", "Please enter a name for this configuration")
+            """Save the custom configuration"""
+            name = name_var.get().strip()
+            if not name:
+                messagebox.showerror("Error", "Please enter a name for the configuration")
                 return
             
-            # If we're editing and the name hasn't changed, we can overwrite
-            # Otherwise, check if the name exists
-            if config_name != edit_name and config_name in self.custom_configs:
-                if not messagebox.askyesno(
-                    "Confirm Overwrite", 
-                    f"A configuration named '{config_name}' already exists. Do you want to overwrite it?"
-                ):
-                    return
-
-            # Get channel labels and save flags
-            channel_labels = [entry.get().strip() for entry in channel_entries]
-            save_flags = [var.get() for var in channel_save_vars]
+            # Get channel entries
+            channels = []
+            save_flags = []
+            for entry, save_var in zip(channel_entries, channel_save_vars):
+                channel = entry.get().strip()
+                if channel:  # Only add non-empty channels
+                    channels.append(channel)
+                    save_flags.append(save_var.get())
             
-            # Check for duplicate channel labels
-            used_labels = {}  # label -> channel numbers
-            for i, label in enumerate(channel_labels):
-                if label and save_flags[i]:  # Only check non-empty labels that are selected to save
-                    if label in used_labels:
-                        used_labels[label].append(i + 1)
-                    else:
-                        used_labels[label] = [i + 1]
-            
-            # Find any duplicates
-            duplicates = {label: channels for label, channels in used_labels.items() if len(channels) > 1}
-            if duplicates:
-                duplicate_msg = []
-                for label, channels in duplicates.items():
-                    channel_str = ", ".join(str(ch) for ch in channels)
-                    duplicate_msg.append(f"Label '{label}' is used in channels: {channel_str}")
-                
-                messagebox.showerror(
-                    "Duplicate Channel Labels",
-                    "Each channel must have a unique label.\n\n" + "\n".join(duplicate_msg) + "\n\nPlease provide unique labels for all channels."
-                )
+            if not channels:
+                messagebox.showerror("Error", "Please enter at least one channel")
                 return
             
-            # Check for channels that are selected to save but have no label
-            unlabeled_channels = []
-            for i, (label, save) in enumerate(zip(channel_labels, save_flags)):
-                if save and not label:
-                    unlabeled_channels.append(i + 1)
-            
-            if unlabeled_channels:
-                if len(unlabeled_channels) == 1:
-                    channel_str = f"Channel {unlabeled_channels[0]}"
-                else:
-                    channel_str = "Channels " + ", ".join(str(ch) for ch in unlabeled_channels)
-                
-                messagebox.showerror(
-                    "Configuration Error",
-                    f"{channel_str} {'is' if len(unlabeled_channels) == 1 else 'are'} selected to save but {'has' if len(unlabeled_channels) == 1 else 'have'} no label.\n\n"
-                    "Please either:\n"
-                    "- Enter labels for these channels, or\n"
-                    "- Uncheck them from being saved to BDF"
-                )
-                return
-            
-            # Get list of channels to actually save
-            channels_to_save = [label for label, save in zip(channel_labels, save_flags) if label and save]
-            
-            if not channels_to_save:
-                messagebox.showerror("Error", "Please enter at least one channel label and select it to save")
-                return
-
-            # If we're editing, remove the old configuration if the name changed
-            if edit_name and edit_name != config_name:
-                del self.custom_configs[edit_name]
-                del CHANNEL_CONFIGS[f"Custom: {edit_name}"]
-
-            # Save configuration
-            self.custom_configs[config_name] = {
-                "output_order": channels_to_save,
-                "save_flags": save_flags
+            # Create configuration
+            config = {
+                "channels": channels,
+                "save_flags": save_flags,
+                "input_order": channels.copy(),  # Use same channels as input order
+                "output_order": channels.copy()  # Use same channels as output order
             }
             
-            # Update CHANNEL_CONFIGS
-            CHANNEL_CONFIGS[f"Custom: {config_name}"] = {
-                "input_order": INPUT_ORDER_32,
-                "output_order": channels_to_save,
-                "description": f"Custom Configuration: {config_name}"
-            }
-            
-            # Save settings
-            self.settings["configurations"] = self.custom_configs
-            self.settings["headset"] = f"Custom: {config_name}"
+            # Save to custom configs
+            self.custom_configs[name] = config
             self.save_settings()
             
-            # Update channel info if this configuration is selected
-            self.channel_mode_var.set(f"Custom: {config_name}")
-            self.update_channel_info()
-            
-            # Refresh the channel mode menu
+            # Update UI
             self.refresh_channel_mode_menu()
-            
-            dialog.destroy()
-            self.reload_configurations()
+            dialog.destroy()  # Use the local dialog variable instead of self.dialog
             messagebox.showinfo("Success", "Custom channel configuration saved")
 
         def on_dialog_close():
@@ -1295,28 +1268,6 @@ class ACErecorder:
         # Add Save and Manage buttons
         ttk.Button(buttons_frame, text="Save Configuration", command=save_custom_config).pack(side=tk.RIGHT)
         ttk.Button(buttons_frame, text="Manage Configurations", command=on_manage_click).pack(side=tk.LEFT)
-
-    def refresh_channel_mode_menu(self):
-        # Get the menu widget
-        menu = self.channel_mode_combo["menu"]
-        
-        # Delete all existing menu items
-        menu.delete(0, "end")
-        
-        # Add standard options
-        for mode in ["2 Channel Headset", "19 Channel Cap", "32 Channel Cap"]:
-            menu.add_command(label=mode, 
-                           command=lambda m=mode: self.channel_mode_var.set(m))
-        
-        # Add separator if we have custom configs
-        if self.custom_configs:
-            menu.add_separator()
-        
-        # Add custom configurations
-        for config_name in sorted(self.custom_configs.keys()):
-            menu_label = f"Custom: {config_name}"
-            menu.add_command(label=menu_label,
-                           command=lambda m=menu_label: self.channel_mode_var.set(m))
 
     def quit_app(self):
         """Clean up and close the application"""
@@ -1505,6 +1456,15 @@ class ACErecorder:
         else:
             print(f"\nWarning: No active duration annotation to end for Duration {index+1}")
             self.duration_vars[index].set(False)
+
+    def on_closing(self):
+        """Handle window closing event"""
+        if self.recording:
+            if messagebox.askokcancel("Quit", "Recording in progress. Stop recording and quit?"):
+                self.stop_recording()
+                self.quit_app()
+        else:
+            self.quit_app()
 
 if __name__ == "__main__":
     try:

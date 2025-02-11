@@ -757,20 +757,12 @@ class ACErecorder:
                             
                             # Calculate coherence for 2 Channel mode
                             if mode == "2 Channel Headset":  # Fixed mode name
-                                print("\nProcessing 2 Channel mode data")
-                                print(f"Output channels: {output_channels}")
-                                
                                 # Get Fp1 and Fp2 data
                                 try:
+                                    # Get indices for Fp1 and Fp2
                                     fp1_idx = output_channels.index("Fp1")
                                     fp2_idx = output_channels.index("Fp2")
                                     coherence_idx = output_channels.index("Coherence")
-                                    
-                                    # Print channel mapping info
-                                    print(f"\nChannel mapping:")
-                                    print(f"Fp1 index: {fp1_idx}, Fp2 index: {fp2_idx}")
-                                    print(f"Input channels: {self.eeg_channels}")
-                                    print(f"Channel mapping: {channel_mapping}")
                                     
                                     # Prepare data for coherence calculation
                                     coherence_data = np.vstack((buffer[fp1_idx, :], buffer[fp2_idx, :]))
@@ -788,7 +780,7 @@ class ACErecorder:
                                     print(f"Error getting channel indices: {e}")
                                     print(f"Available channels: {output_channels}")
                             else:
-                                print(f"\nNot in 2 Channel mode. Current mode: {mode}")
+                                pass
                             
                             # Write the data
                             try:
@@ -831,7 +823,7 @@ class ACErecorder:
                 
                 # Write annotations to BDF file
                 if self.annotations:
-                    print("\nWriting annotations to BDF file...")
+                    print("Writing annotations to BDF file...")
                     for ann in self.annotations:
                         try:
                             f.writeAnnotation(ann['onset'], ann['duration'], ann['description'])
@@ -846,7 +838,7 @@ class ACErecorder:
                 # Close the file
                 try:
                     f.close()
-                    print("\nBDF file closed successfully")
+                    print("BDF file closed successfully")
                 except Exception as e:
                     print(f"Error closing BDF file: {e}")
                     traceback.print_exc()
@@ -885,12 +877,12 @@ class ACErecorder:
                     
                     if duration <= 0:  # If annotation would have negative duration, remove it
                         self.annotations.pop(self.duration_indices[i])
-                        print(f"\n=== DURATION {i+1} REMOVED: Too short to include ===")
+                        print(f"=== DURATION {i+1} REMOVED: Too short to include ===")
                     else:
                         # Update the annotation
                         self.annotations[self.duration_indices[i]]['duration'] = duration
                         annotation_name = self.annotations[self.duration_indices[i]]['description']
-                        print(f"\n=== DURATION {i+1} STOP: '{annotation_name}' @ {end_time:.3f}s (Duration: {duration:.3f}s) ===")
+                        print(f"=== DURATION {i+1} STOP: '{annotation_name}' @ {end_time:.3f}s (Duration: {duration:.3f}s) ===")
                     
                     # Reset the checkbox and timer
                     self.duration_vars[i].set(False)
@@ -909,7 +901,7 @@ class ACErecorder:
         try:
             # Clean up board resources
             if self.board:
-                print("\nCleaning up board resources...")
+                print("Cleaning up board resources...")
                 try:
                     self.board.stop_stream()
                     print("Stream stopped")
@@ -1448,7 +1440,7 @@ class ACErecorder:
         # Update entry dropdown
         self.marker_entries[index]['values'] = self.marker_history
         
-        print(f"\n=== INSTANT MARKER {index+1}: '{annotation_name}' @ {onset:.3f}s ===")
+        print(f"=== INSTANT MARKER {index+1}: '{annotation_name}' @ {onset:.3f}s ===")
 
     def toggle_duration_annotation(self, index):
         """Toggle a duration annotation on/off"""
@@ -1512,9 +1504,9 @@ class ACErecorder:
                 self.update_countdown(index, end_time)
                 self.duration_timers[index] = self.root.after(timer_duration * 1000, 
                                                             lambda idx=index: self.auto_stop_duration(idx))
-                print(f"\n=== DURATION {index+1} START: {annotation_name} @ {start_time:.3f}s (Timer: {minutes}m {seconds}s) ===")
+                print(f"=== DURATION {index+1} START: {annotation_name} @ {start_time:.3f}s (Timer: {minutes}m {seconds}s) ===")
             else:
-                print(f"\n=== DURATION {index+1} START: {annotation_name} @ {start_time:.3f}s ===")
+                print(f"=== DURATION {index+1} START: {annotation_name} @ {start_time:.3f}s ===")
         else:  # Stopping duration
             self.stop_duration(index)
 
@@ -1556,7 +1548,7 @@ class ACErecorder:
             time.sleep(0.1)  # Small pause between beeps
             winsound.Beep(1000, 100)  # Second beep
         except:
-            print("\nCould not play bell sound")
+            print("Could not play bell sound")
 
     def stop_duration(self, index):
         """Stop a duration annotation (called from toggle or auto-stop)"""
@@ -1565,7 +1557,7 @@ class ACErecorder:
             now = time.time() - self.recording_start_time
             duration_annotation = self.annotations[self.duration_indices[index]]
             duration_annotation['duration'] = now - duration_annotation['onset']
-            print(f"\n=== DURATION {index+1} END: {duration_annotation['description']} "
+            print(f"=== DURATION {index+1} END: {duration_annotation['description']} "
                   f"({duration_annotation['duration']:.1f}s) @ {now:.1f}s ===")
             self.duration_indices[index] = None
             
@@ -1578,7 +1570,7 @@ class ACErecorder:
                 self.countdown_timers[index] = None
             self.countdown_vars[index].set("")  # Clear countdown display
         else:
-            print(f"\nWarning: No active duration annotation to end for Duration {index+1}")
+            print(f"Warning: No active duration annotation to end for Duration {index+1}")
             self.duration_vars[index].set(False)
 
     def on_closing(self):

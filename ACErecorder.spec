@@ -16,13 +16,20 @@ if not os.path.exists(logo_file):
 # Collect data files and dependencies
 datas = [(logo_file, '.'), (icon_file, '.')]
 binaries = []
-hiddenimports = ['serial', 'serial.tools.list_ports', 'brainflow', 'brainflow.board_shim', 'mne', 'mne.io', 'mne_connectivity']
+hiddenimports = [
+    'serial', 'serial.tools.list_ports',
+    'brainflow', 'brainflow.board_shim', 'brainflow.data_filter',
+    'mne', 'mne.io', 'mne_connectivity',
+    'pyedflib', 'numpy', 'PIL', 'PIL._tkinter_finder'
+]
 
-# Collect all required files for brainflow and mne
-tmp_ret = collect_all('brainflow')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-tmp_ret = collect_all('mne')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+# Collect all required files for packages
+packages_to_collect = ['brainflow', 'mne', 'pyedflib', 'PIL']
+for package in packages_to_collect:
+    tmp_ret = collect_all(package)
+    datas += tmp_ret[0]
+    binaries += tmp_ret[1]
+    hiddenimports += tmp_ret[2]
 
 a = Analysis(
     ['ACErecorder.py'],

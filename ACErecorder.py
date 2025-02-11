@@ -38,10 +38,18 @@ except ImportError as e:
 def compute_coherence(data, fs, fmin=7, fmax=12, duration=1, overlap=0):
     """Compute coherence between two channels (Fp1 and Fp2)"""
     if not HAS_MNE:
-        return 0.0  # Return default value if MNE is not available
+        print("MNE library not available for coherence calculation")
+        return 0.0
         
     try:
         mne.set_log_level("CRITICAL")
+        
+        # Print input data stats
+        print(f"\nCoherence calculation input:")
+        print(f"Data shape: {data.shape}")
+        print(f"Sample rate: {fs}")
+        print(f"First few samples Fp1: {data[0, :5]}")
+        print(f"First few samples Fp2: {data[1, :5]}")
         
         ch_names = ['Fp1', 'Fp2']
         ch_types = ['eeg', 'eeg']
@@ -55,9 +63,13 @@ def compute_coherence(data, fs, fmin=7, fmax=12, duration=1, overlap=0):
             faverage=True, mt_adaptive=True, n_jobs=1, verbose="CRITICAL"
         )
         con_values = con_obj.get_data(output='dense')[:, :, 0]
-        return 4 * np.mean(con_values)
+        coherence = 4 * np.mean(con_values)
+        
+        print(f"Calculated coherence: {coherence:.4f}")
+        return coherence
     except Exception as e:
         print(f"Coherence calculation error: {e}")
+        traceback.print_exc()  # Add full traceback
         return 0.0
 
 # Channel configurations
@@ -70,9 +82,9 @@ INPUT_ORDER_32 = ["O2", "P8", "A2", "F8", "Fp2", "F4", "C4", "P4", "FC6", "CP6",
                   "Fp1", "F3", "C3", "P3", "O1", "P7", "A1", "F7"]
 
 CHANNEL_CONFIGS = {
-    "2 Channel": {
-        "input_order": INPUT_ORDER_19,  # Using 19ch input order for 2ch mode
-        "output_order": ["Fp1", "Fp2", "Coherence"],  # Removed HR and sync
+    "2 Channel Headset": {  # Updated to match UI
+        "input_order": INPUT_ORDER_19,
+        "output_order": ["Fp1", "Fp2", "Coherence"],
         "description": "2 Channel Mode (Fp1, Fp2)"
     },
     "19 Channel": {
@@ -247,8 +259,14 @@ class ACErecorder:
         
         # Headset Selection
         ttk.Label(content_frame, text="Headset:").grid(row=0, column=0, pady=5, sticky=tk.W)
+        
+        # Combine standard and custom configurations
+        headset_options = list(CHANNEL_CONFIGS.keys())
+        if self.custom_configs:
+            headset_options.extend([f"Custom: {name}" for name in self.custom_configs.keys()])
+            
         self.channel_mode_combo = ttk.Combobox(content_frame, textvariable=self.channel_mode_var, 
-                                             values=list(self.custom_configs.keys()), state="readonly")
+                                             values=headset_options, state="readonly")
         self.channel_mode_combo.grid(row=0, column=1, pady=5, sticky=(tk.W, tk.E))
         self.channel_mode_combo.bind('<<ComboboxSelected>>', self.on_channel_mode_change)
         
@@ -412,16 +430,30 @@ class ACErecorder:
     def update_channel_info(self):
         """Update channel count and mode info"""
         mode = self.channel_mode_var.get()
-        if mode in self.custom_configs:
-            channel_count = len(self.custom_configs[mode]["output_order"])
-            self.channel_count_var.set(f"Channels: {channel_count}")
-            
-            # Update description if available
-            if "description" in self.custom_configs[mode]:
-                self.mode_description_var.set(self.custom_configs[mode]["description"])
-            else:
-                self.mode_description_var.set("")
         
+        # Handle built-in configurations
+        if mode in CHANNEL_CONFIGS:
+            config = CHANNEL_CONFIGS[mode]
+            channel_count = len(config["output_order"])
+            self.channel_count_var.set(f"Channels: {channel_count}")
+            self.mode_description_var.set(config["description"])
+        # Handle custom configurations (strip "Custom: " prefix if present)
+        elif mode.startswith("Custom: "):
+            custom_mode = mode[8:]  # Remove "Custom: " prefix
+            if custom_mode in self.custom_configs:
+                config = self.custom_configs[custom_mode]
+                channel_count = len(config["output_order"])
+                self.channel_count_var.set(f"Channels: {channel_count}")
+                
+                # Update description if available
+                if "description" in config:
+                    self.mode_description_var.set(config["description"])
+                else:
+                    self.mode_description_var.set("")
+        else:
+            self.channel_count_var.set("Channels: --")
+            self.mode_description_var.set("")
+
     def on_channel_mode_change(self, event=None):
         """Handle channel mode changes"""
         self.update_channel_info()
@@ -618,12 +650,23 @@ class ACErecorder:
         """Record data from the board"""
         try:
             mode = self.channel_mode_var.get()
-            if mode not in self.custom_configs:
+            
+            # Get configuration based on mode
+            if mode in CHANNEL_CONFIGS:
+                config = CHANNEL_CONFIGS[mode]
+            elif mode.startswith("Custom: "):
+                custom_mode = mode[8:]  # Remove "Custom: " prefix
+                if custom_mode in self.custom_configs:
+                    config = self.custom_configs[custom_mode]
+                else:
+                    self.recording = False
+                    messagebox.showerror("Error", f"Custom configuration not found: {custom_mode}")
+                    return
+            else:
                 self.recording = False
                 messagebox.showerror("Error", f"Invalid configuration mode: {mode}")
                 return
                 
-            config = self.custom_configs[mode]
             if "input_order" not in config or "output_order" not in config:
                 self.recording = False
                 messagebox.showerror("Error", f"Invalid configuration format for mode: {mode}")
@@ -713,23 +756,39 @@ class ACErecorder:
                                     buffer[out_idx, buffer_count:] = data[self.eeg_channels[in_idx], :samples_to_fill]
                             
                             # Calculate coherence for 2 Channel mode
-                            if mode == "2 Channel":
+                            if mode == "2 Channel Headset":  # Fixed mode name
+                                print("\nProcessing 2 Channel mode data")
+                                print(f"Output channels: {output_channels}")
+                                
                                 # Get Fp1 and Fp2 data
-                                fp1_idx = output_channels.index("Fp1")
-                                fp2_idx = output_channels.index("Fp2")
-                                coherence_idx = output_channels.index("Coherence")
-                                
-                                # Prepare data for coherence calculation
-                                coherence_data = np.vstack((buffer[fp1_idx, :], buffer[fp2_idx, :]))
-                                
-                                # Calculate coherence
                                 try:
-                                    coherence_value = compute_coherence(coherence_data, self.sample_rate)
-                                    # Fill the coherence buffer with the computed value
-                                    buffer[coherence_idx, :] = coherence_value
-                                except Exception as e:
-                                    print(f"Coherence calculation error: {e}")
-                                    buffer[coherence_idx, :] = 0
+                                    fp1_idx = output_channels.index("Fp1")
+                                    fp2_idx = output_channels.index("Fp2")
+                                    coherence_idx = output_channels.index("Coherence")
+                                    
+                                    # Print channel mapping info
+                                    print(f"\nChannel mapping:")
+                                    print(f"Fp1 index: {fp1_idx}, Fp2 index: {fp2_idx}")
+                                    print(f"Input channels: {self.eeg_channels}")
+                                    print(f"Channel mapping: {channel_mapping}")
+                                    
+                                    # Prepare data for coherence calculation
+                                    coherence_data = np.vstack((buffer[fp1_idx, :], buffer[fp2_idx, :]))
+                                    
+                                    # Calculate coherence
+                                    try:
+                                        coherence_value = compute_coherence(coherence_data, self.sample_rate)
+                                        # Fill the coherence buffer with the computed value
+                                        buffer[coherence_idx, :] = coherence_value
+                                    except Exception as e:
+                                        print(f"Coherence calculation error: {e}")
+                                        traceback.print_exc()  # Add full traceback
+                                        buffer[coherence_idx, :] = 0
+                                except ValueError as e:
+                                    print(f"Error getting channel indices: {e}")
+                                    print(f"Available channels: {output_channels}")
+                            else:
+                                print(f"\nNot in 2 Channel mode. Current mode: {mode}")
                             
                             # Write the data
                             try:
@@ -887,39 +946,17 @@ class ACErecorder:
         try:
             if os.path.exists(self.settings_file):
                 with open(self.settings_file, 'r') as f:
-                    self.settings = json.load(f)
-            else:
-                self.settings = {}
-
-            # Initialize configurations if not present
-            if "configurations" not in self.settings:
-                self.settings["configurations"] = {}
-
-            # Add any custom configurations from the old format
-            if "custom_configs" in self.settings:
-                self.settings["configurations"].update(self.settings.pop("custom_configs"))
-
-            # Add default configurations to the settings dictionary but don't save them
-            self.settings["configurations"] = {
-                **{
-                    "2 Channel Headset": CHANNEL_CONFIGS["2 Channel"],
-                    "19 Channel": CHANNEL_CONFIGS["19 Channel"],
-                    "32 Channel": CHANNEL_CONFIGS["32 Channel"]
-                },
-                **self.settings["configurations"]
-            }
-
-            # Use a single consistent setting for last used configuration
-            if "last_channel_mode" in self.settings:
-                self.settings["headset"] = self.settings.pop("last_channel_mode")
-            if "headset" not in self.settings:
-                self.settings["headset"] = "19 Channel"
-
-            return self.settings
-
+                    settings = json.load(f)
+                    
+                    # Update old configuration names
+                    if settings.get("headset") == "2 Channel":
+                        settings["headset"] = "2 Channel Headset"
+                    
+                    return settings
+            return {}
         except Exception as e:
-            print(f"Error loading settings: {e}")
-            return {"headset": "19 Channel", "configurations": {}}
+            print(f"Error loading settings: {str(e)}")
+            return {}
 
     def save_settings(self):
         """Save settings to file"""

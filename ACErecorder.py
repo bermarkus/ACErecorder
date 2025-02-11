@@ -218,6 +218,8 @@ class ACErecorder:
         self.filename_suffix = ""
         self.port_mapping = {}
         self.recording_start_time = None
+        self.total_samples_written = 0  # Track total samples written
+        self.current_buffer_samples = 0  # Track samples in current buffer
         self.annotations = []
         self.duration_indices = [None] * 5  # Track up to 5 duration annotations
         self.duration_timers = [None] * 5  # Track timer jobs for auto-stop
@@ -298,8 +300,8 @@ class ACErecorder:
         # Load annotation history from settings
         self.duration_history = self.settings.get("duration_history", [])
         self.marker_history = self.settings.get("marker_history", [])
-        self.last_duration_labels = self.settings.get("last_duration_labels", ["Duration 1 name"] * 5)
-        self.last_marker_labels = self.settings.get("last_marker_labels", ["Marker 1 name"] * 5)
+        self.last_duration_labels = self.settings.get("last_duration_labels", [f"Duration {i+1}" for i in range(5)])
+        self.last_marker_labels = self.settings.get("last_marker_labels", [f"Marker {i+1}" for i in range(5)])
 
         # Duration Annotations Section with padding
         duration_section = ttk.LabelFrame(annotation_controls_frame, text="Duration Annotations")
@@ -635,17 +637,19 @@ class ACErecorder:
                 self.recording = False
                 messagebox.showerror("Error", "No channels configured")
                 return
-            
+                
             # Get the input channels based on mode
             channel_mapping = {}  # Maps output index to input index
             for out_idx, out_channel in enumerate(output_channels):
                 if out_channel in input_order:
                     channel_mapping[out_idx] = input_order.index(out_channel)
-            
+                    
             # Initialize buffer for EDF file
             buffer = np.zeros((len(output_channels), self.sample_rate))
             buffer_count = 0
             no_data_count = 0
+            self.total_samples_written = 0  # Reset sample counter
+            self.current_buffer_samples = 0  # Reset buffer position
             
             # Get indices of EEG channels from board
             self.eeg_channels = self.board.get_eeg_channels(self.board.board_id)
@@ -674,16 +678,25 @@ class ACErecorder:
                     'prefilter': ''
                 } for ch_name in output_channels])
                 
-                while self.recording:
+                # Flag to indicate we're in stopping state
+                stopping = False
+                
+                while self.recording or (stopping and buffer_count < self.sample_rate):
                     try:
                         data = self.board.get_board_data()
                         new_samples = data.shape[1]
+                        
+                        # Update stopping state
+                        if not self.recording and not stopping:
+                            stopping = True
+                            print("Completing current data record before stopping...")
                         
                         # Check if we're receiving data
                         if new_samples == 0:
                             no_data_count += 1
                             if no_data_count >= 100:  # After ~1 second of no data (assuming 10ms sleep)
                                 self.recording = False
+                                stopping = False  # Force stop if we've lost connection
                                 messagebox.showerror("Error", "Lost connection with the optical dongle.\nRecording has been stopped.")
                                 break
                             time.sleep(0.01)
@@ -721,6 +734,7 @@ class ACErecorder:
                             # Write the data
                             try:
                                 f.writeSamples(buffer)
+                                self.total_samples_written += self.sample_rate
                                 print(f"Wrote {self.sample_rate} samples to file")
                             except Exception as e:
                                 print(f"Error writing samples: {e}")
@@ -732,15 +746,22 @@ class ACErecorder:
                                     if in_idx < len(self.eeg_channels):
                                         buffer[out_idx, :new_samples-samples_to_fill] = data[self.eeg_channels[in_idx], samples_to_fill:]
                                 buffer_count = new_samples - samples_to_fill
+                                self.current_buffer_samples = buffer_count
                             else:
                                 buffer_count = 0
+                                self.current_buffer_samples = 0
                                 buffer.fill(0)
+                                
+                                # If we were stopping and just wrote a complete buffer, we're done
+                                if stopping:
+                                    break
                         else:
                             # Map input channels to output channels
                             for out_idx, in_idx in channel_mapping.items():
                                 if in_idx < len(self.eeg_channels):
                                     buffer[out_idx, buffer_count:buffer_count+new_samples] = data[self.eeg_channels[in_idx], :]
                             buffer_count += new_samples
+                            self.current_buffer_samples = buffer_count
                         
                         time.sleep(0.01)
                     except Exception as e:
@@ -748,41 +769,118 @@ class ACErecorder:
                         traceback.print_exc()
                         messagebox.showerror("Error", f"Recording error: {str(e)}")
                         break
+                
+                # Write annotations to BDF file
+                if self.annotations:
+                    print("\nWriting annotations to BDF file...")
+                    for ann in self.annotations:
+                        try:
+                            f.writeAnnotation(ann['onset'], ann['duration'], ann['description'])
+                            print(f"Wrote annotation: {ann['description']} @ {ann['onset']:.3f}s (Duration: {ann['duration']:.3f}s)")
+                        except Exception as e:
+                            print(f"Error writing annotation: {e}")
+                            traceback.print_exc()
+                
+                # Now that annotations are written, clear them for the next recording
+                self.annotations = []
+                
+                # Close the file
+                try:
+                    f.close()
+                    print("\nBDF file closed successfully")
+                except Exception as e:
+                    print(f"Error closing BDF file: {e}")
+                    traceback.print_exc()
+                
             except Exception as e:
-                print(f"Error writing EDF file: {e}")
+                print(f"Error creating BDF file: {e}")
                 traceback.print_exc()
-                messagebox.showerror("Error", f"Error writing EDF file: {str(e)}")
+                messagebox.showerror("Error", f"Error creating BDF file: {str(e)}")
                 self.recording = False
-            
-            # Save annotations to BDF
-            if self.annotations:
-                for ann in self.annotations:
-                    f.writeAnnotation(
-                        onset_in_seconds=ann['onset'],
-                        duration_in_seconds=ann['duration'],
-                        description=ann['description']
-                    )
-
+                
         except Exception as e:
-            print(f"Error in record_data: {e}")
+            print(f"Recording thread error: {e}")
             traceback.print_exc()
-            messagebox.showerror("Error", f"Error in record_data: {str(e)}")
+            messagebox.showerror("Error", f"Recording thread error: {str(e)}")
             self.recording = False
 
     def stop_recording(self):
-        if self.recording:
-            self.recording = False
-            self.recording_start_time = None
-            self.record_thread.join()
-            self.board.stop_stream()
-            self.board.release_session()
-            self.board = None
+        if not self.recording:
+            return
             
-            self.status_var.set("Not Recording")  
-            self.filename_entry.config(state="normal")
-            self.port_combo.config(state="readonly")
-            self.recording_duration_var.set("0 seconds")  
-            messagebox.showinfo("Success", f"Recording saved to {self.output_file}")
+        # Calculate end time for annotations (1 second before end of recording)
+        annotation_end_time = (self.total_samples_written + self.current_buffer_samples - self.sample_rate) / self.sample_rate
+        if annotation_end_time < 0:  # If recording is less than 1 second
+            annotation_end_time = 0
+            
+        # Close any open duration annotations
+        for i in range(5):
+            if self.duration_vars[i].get():  # If checkbox is checked, annotation is active
+                # Calculate end time based on total samples
+                if self.duration_indices[i] is not None:
+                    start_time = self.annotations[self.duration_indices[i]]['onset']
+                    
+                    # Ensure annotation doesn't end after the recording
+                    end_time = min(annotation_end_time, (self.total_samples_written + self.current_buffer_samples) / self.sample_rate)
+                    duration = end_time - start_time
+                    
+                    if duration <= 0:  # If annotation would have negative duration, remove it
+                        self.annotations.pop(self.duration_indices[i])
+                        print(f"\n=== DURATION {i+1} REMOVED: Too short to include ===")
+                    else:
+                        # Update the annotation
+                        self.annotations[self.duration_indices[i]]['duration'] = duration
+                        annotation_name = self.annotations[self.duration_indices[i]]['description']
+                        print(f"\n=== DURATION {i+1} STOP: '{annotation_name}' @ {end_time:.3f}s (Duration: {duration:.3f}s) ===")
+                    
+                    # Reset the checkbox and timer
+                    self.duration_vars[i].set(False)
+                    if self.duration_timers[i]:
+                        self.root.after_cancel(self.duration_timers[i])
+                        self.duration_timers[i] = None
+                    self.duration_indices[i] = None
+                    
+                    # Clear countdown if present
+                    if hasattr(self, 'countdown_labels') and i < len(self.countdown_labels):
+                        self.countdown_labels[i].config(text="")
+        
+        self.recording = False
+        time.sleep(0.5)  # Give time for recording thread to finish
+        
+        try:
+            # Clean up board resources
+            if self.board:
+                print("\nCleaning up board resources...")
+                try:
+                    self.board.stop_stream()
+                    print("Stream stopped")
+                except Exception as e:
+                    print(f"Error stopping stream: {e}")
+                
+                try:
+                    self.board.release_session()
+                    print("Session released")
+                except Exception as e:
+                    print(f"Error releasing session: {e}")
+                    
+                self.board = None
+                print("Board cleanup complete")
+        except Exception as e:
+            print(f"Error during board cleanup: {e}")
+        
+        # Update UI
+        self.record_button.config(text="Start Recording")
+        self.record_button.config(style="Green.TButton")
+        
+        # Enable configuration controls
+        self.channel_mode_combo.config(state="normal")
+        self.port_combo.config(state="readonly")
+        self.filename_entry.config(state="normal")
+        
+        # Update status
+        self.status_label.config(text="Recording stopped")
+        
+        # NOTE: The annotations list will be cleared after record_data() writes them to the BDF file
 
     def load_settings(self):
         """Load settings from file"""
@@ -1290,56 +1388,52 @@ class ACErecorder:
             return
             
         annotation_name = self.marker_entries[index].get().strip()
-        if not annotation_name or annotation_name == f'Marker {index+1} name':
-            messagebox.showerror("Error", "Valid annotation name required")
+        if not annotation_name:  
+            messagebox.showerror("Error", "Annotation name cannot be empty")
             return
         
-        # Add marker with 0 duration
-        now = time.time() - self.recording_start_time
+        # Calculate onset based on samples written plus current buffer position
+        onset = (self.total_samples_written + self.current_buffer_samples) / self.sample_rate
         self.annotations.append({
-            'onset': now,
+            'onset': onset,
             'duration': 0.0,
             'description': annotation_name
         })
         
-        # Update marker history and last used label
-        if annotation_name not in self.marker_history:
+        # Add to history if not already present and not a default name
+        if annotation_name not in self.marker_history and not annotation_name.startswith("Marker"):
             self.marker_history.append(annotation_name)
-            # Keep only the last 10 unique entries
-            self.marker_history = self.marker_history[-10:]
-            # Update all marker entry dropdowns
-            for entry in self.marker_entries:
-                entry['values'] = self.marker_history
-        
-        # Save the last used label for this specific marker
-        self.last_marker_labels[index] = annotation_name
-        # Save to settings
-        self.settings["marker_history"] = self.marker_history
-        self.settings["last_marker_labels"] = self.last_marker_labels
-        self.save_settings()
+            self.save_settings()
             
-        print(f"\n=== INSTANT MARKER {index+1}: '{annotation_name}' @ {now:.1f}s ===")
+        # Update last used label
+        self.last_marker_labels[index] = annotation_name
+        
+        # Update entry dropdown
+        self.marker_entries[index]['values'] = self.marker_history
+        
+        print(f"\n=== INSTANT MARKER {index+1}: '{annotation_name}' @ {onset:.3f}s ===")
 
     def toggle_duration_annotation(self, index):
-        if self.duration_vars[index].get():
-            if not self.recording or self.recording_start_time is None:
-                self.duration_vars[index].set(False)
-                messagebox.showerror("Error", "Recording not properly initialized")
-                return
+        """Toggle a duration annotation on/off"""
+        if not self.recording:
+            self.duration_vars[index].set(False)  # Reset checkbox
+            messagebox.showerror("Error", "Start recording first")
+            return
             
+        if self.duration_vars[index].get():  # Starting duration
             annotation_name = self.duration_entries[index].get().strip()
-            if not annotation_name or annotation_name == f'Duration {index+1} name':
-                messagebox.showerror("Error", "Valid annotation name required")
-                self.duration_vars[index].set(False)
+            if not annotation_name:  
+                messagebox.showerror("Error", "Annotation name cannot be empty")
+                self.duration_vars[index].set(False)  # Reset checkbox
                 return
-            
+                
             # Get timer values if set
-            minutes_entry, seconds_entry = self.duration_timer_entries[index]
-            minutes = minutes_entry.get().strip()
-            seconds = seconds_entry.get().strip()
+            minutes = self.duration_timer_entries[index][0].get().strip()
+            seconds = self.duration_timer_entries[index][1].get().strip()
             
+            # Calculate timer duration if values are set
             timer_duration = None
-            if minutes or seconds:  # If either field has a value
+            if minutes or seconds:
                 try:
                     minutes = int(minutes) if minutes else 0
                     seconds = int(seconds) if seconds else 0
@@ -1347,51 +1441,44 @@ class ACErecorder:
                         raise ValueError("Invalid time values")
                     timer_duration = minutes * 60 + seconds
                 except ValueError:
-                    messagebox.showerror("Error", "Invalid timer values. Minutes should be ≥0, seconds should be 0-59")
+                    messagebox.showerror("Error", "Invalid timer values")
                     self.duration_vars[index].set(False)
                     return
             
-            # Record start time and print status
-            start_time = time.time() - self.recording_start_time
+            # Calculate onset based on total samples
+            start_time = (self.total_samples_written + self.current_buffer_samples) / self.sample_rate
+            
+            # Add to annotations list with 0 duration (will be updated when stopped)
             self.annotations.append({
                 'onset': start_time,
                 'duration': 0.0,
                 'description': annotation_name
             })
             
-            # Update duration history and last used label
-            if annotation_name not in self.duration_history:
+            # Add to history if not already present and not a default name
+            if annotation_name not in self.duration_history and not annotation_name.startswith("Duration"):
                 self.duration_history.append(annotation_name)
-                self.duration_history = self.duration_history[-10:]
-                for entry in self.duration_entries:
-                    entry['values'] = self.duration_history
-            
-            # Save the last used label for this specific duration
+                self.save_settings()
+                
+            # Update last used label
             self.last_duration_labels[index] = annotation_name
-            self.settings["duration_history"] = self.duration_history
-            self.settings["last_duration_labels"] = self.last_duration_labels
-            self.save_settings()
             
+            # Update entry dropdown
+            self.duration_entries[index]['values'] = self.duration_history
+            
+            # Store index of this annotation
             self.duration_indices[index] = len(self.annotations) - 1
             
-            # Set up timer if duration specified
+            # Start timer if duration was specified
             if timer_duration is not None:
-                print(f"\n=== DURATION {index+1} START: {annotation_name} @ {start_time:.1f}s (Timer: {minutes}m {seconds}s) ===")
-                # Cancel any existing timer
-                if self.duration_timers[index]:
-                    self.root.after_cancel(self.duration_timers[index])
-                # Schedule auto-stop
                 end_time = time.time() + timer_duration
-                self.duration_timers[index] = self.root.after(
-                    int(timer_duration * 1000),  # Convert to milliseconds
-                    lambda: self.auto_stop_duration(index)
-                )
-                # Start countdown display
                 self.update_countdown(index, end_time)
+                self.duration_timers[index] = self.root.after(timer_duration * 1000, 
+                                                            lambda idx=index: self.auto_stop_duration(idx))
+                print(f"\n=== DURATION {index+1} START: {annotation_name} @ {start_time:.3f}s (Timer: {minutes}m {seconds}s) ===")
             else:
-                print(f"\n=== DURATION {index+1} START: {annotation_name} @ {start_time:.1f}s ===")
-                self.countdown_vars[index].set("")  # Clear any previous countdown
-        else:
+                print(f"\n=== DURATION {index+1} START: {annotation_name} @ {start_time:.3f}s ===")
+        else:  # Stopping duration
             self.stop_duration(index)
 
     def update_countdown(self, index, end_time):

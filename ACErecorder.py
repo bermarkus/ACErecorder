@@ -1040,14 +1040,22 @@ class ACErecorder:
         """Refresh the channel mode combo box with updated configurations"""
         current_mode = self.channel_mode_var.get()
         
+        # Get standard configurations
+        standard_configs = ["2 Channel Headset", "19 Channel", "32 Channel"]
+        
+        # Combine standard and custom configurations
+        all_configs = standard_configs.copy()
+        if self.custom_configs:
+            all_configs.extend([f"Custom: {name}" for name in self.custom_configs.keys()])
+        
         # Update combobox values
-        self.channel_mode_combo['values'] = list(self.custom_configs.keys())
+        self.channel_mode_combo['values'] = all_configs
         
         # Try to keep the current selection if it still exists
-        if current_mode in self.custom_configs:
+        if current_mode in all_configs:
             self.channel_mode_var.set(current_mode)
-        elif self.custom_configs:
-            self.channel_mode_var.set(list(self.custom_configs.keys())[0])
+        else:
+            self.channel_mode_var.set("19 Channel")  # Default to 19 Channel if current selection is invalid
         
         # Update channel info display
         self.update_channel_info()

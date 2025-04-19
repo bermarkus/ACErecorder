@@ -1,5 +1,6 @@
 {
-    "headset": "19 Channel",
-    "com_port": "",
-    "configurations": {}
+    "headset": "64 Channel",
+    "com_port": "COM3 (EEG optical dongle)",
+    "configurations": {},
+    "com_port2": "COM5 (EEG optical dongle)"
 }

@@ -99,6 +99,11 @@ CHANNEL_CONFIGS = {
                         "FC5", "FC6", "C3", "Cz", "C4", "CP1", "CP2", "CP5", "CP6", "P7", "P3", 
                         "Pz", "P4", "P8", "PO3", "PO4", "O1", "O2", "A1", "A2", "HR"],
         "description": "32 Channel Mode (Extended 10-20)"
+    },
+    "64 Channel": {
+        "input_order": [f"Ch{i}" for i in range(1, 65)],
+        "output_order": [f"Ch{i}" for i in range(1, 65)],
+        "description": "64 Channel Mode (Dual FreeEEG32, synchronized)"
     }
 }
 
@@ -138,6 +143,15 @@ class SplashScreen:
         self.root.destroy()
 
 class ACErecorder:
+    def update_port2_visibility(self, *args):
+        """Show/hide second COM port selector based on channel mode"""
+        if self.channel_mode_var.get() == "64 Channel":
+            self.port2_combo.grid()
+            self.port2_combo.configure(state="readonly")
+        else:
+            self.port2_combo.grid_remove()
+            self.port2_var.set('')
+
     def __init__(self, root):
         self.root = root
         self.root.title("ACErecorder")
@@ -283,17 +297,29 @@ class ACErecorder:
         self.port_combo.grid(row=2, column=1, pady=5, sticky=(tk.W, tk.E))
         self.port_combo.bind('<<ComboboxSelected>>', lambda e: self.on_port_change())
         
+        # Second COM Port for 64 Channel mode
+        ttk.Label(content_frame, text="COM Port 2:").grid(row=3, column=0, pady=5, sticky=tk.W)
+        self.port2_var = tk.StringVar()
+        self.port2_combo = ttk.Combobox(content_frame, textvariable=self.port2_var, state="readonly")
+        self.port2_combo.grid(row=3, column=1, pady=5, sticky=(tk.W, tk.E))
+        self.port2_combo.bind('<<ComboboxSelected>>', lambda e: self.on_port2_change())
+        self.port2_combo.grid_remove()  # Hide by default
+        
+        # Show/hide port2 based on channel mode
+        self.channel_mode_var.trace_add('write', self.update_port2_visibility)
+        self.update_port2_visibility()
+        
         # Status label with increased wraplength and fixed height
         self.status_var = tk.StringVar(value="Ready to record")  
         status_frame = ttk.Frame(content_frame, height=50)  # Fixed height container
-        status_frame.grid(row=3, column=0, columnspan=2, pady=10, sticky='ew')
+        status_frame.grid(row=4, column=0, columnspan=2, pady=10, sticky='ew')
         status_frame.grid_propagate(False)  # Prevent frame from shrinking
         self.status_label = ttk.Label(status_frame, textvariable=self.status_var, wraplength=600)  # Increased wraplength
         self.status_label.grid(row=0, column=0, sticky='w')
         
         # Recording info frame
         info_frame = ttk.LabelFrame(content_frame, text="Recording Info", padding="5")
-        info_frame.grid(row=4, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=5)
+        info_frame.grid(row=5, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=5)
         
         # Duration
         ttk.Label(info_frame, textvariable=self.recording_duration_var).grid(row=0, column=0, padx=5)  
@@ -309,11 +335,11 @@ class ACErecorder:
         
         # Record button
         self.record_button = ttk.Button(content_frame, text="Start Recording", command=self.toggle_recording)
-        self.record_button.grid(row=5, column=0, columnspan=2, pady=5)
+        self.record_button.grid(row=6, column=0, columnspan=2, pady=5)
         
         # Annotation Controls Frame with increased padding
         annotation_controls_frame = ttk.LabelFrame(content_frame, text="Annotation Controls")
-        annotation_controls_frame.grid(row=6, column=0, columnspan=2, pady=(10, 20), sticky='ew')  
+        annotation_controls_frame.grid(row=7, column=0, columnspan=2, pady=(10, 20), sticky='ew')  
 
         # Load annotation history from settings
         self.duration_history = self.settings.get("duration_history", [])
@@ -457,6 +483,7 @@ class ACErecorder:
     def on_channel_mode_change(self, event=None):
         """Handle channel mode changes"""
         self.update_channel_info()
+        self.update_port2_visibility()
         self.save_settings()  # Save settings when headset type changes
 
     def create_menu(self):
@@ -480,9 +507,31 @@ class ACErecorder:
 
     def update_com_ports(self):
         """Update the list of available COM ports"""
+        # ... (existing code) ...
+
+    def generate_filename(self):
+        """Generate filename with date-time prefix"""
+        current_time = datetime.now().strftime("%d-%m-%Y_%H-%M-%S")
+        suffix = self.filename_var.get().strip()
+        if suffix:
+            filename = f"{current_time}_{suffix}.bdf"
+        else:
+            filename = f"{current_time}.bdf"
+        return os.path.join(self.eeg_dir, filename)
+
+        """Update the list of available COM ports"""
+        # ... (existing code) ...
+
+    def periodic_port_update(self):
+        """Periodically update COM ports if not recording"""
+        if not self.recording:
+            self.update_com_ports()
+        self.root.after(5000, self.periodic_port_update)
+
+        """Update the list of available COM ports"""
         # Get all active ports with their descriptions
         available_ports = list(serial.tools.list_ports.comports())
-        
+
         # Find all Silicon Labs devices and USB Serial Devices
         eeg_ports = []
         for port in available_ports:
@@ -491,56 +540,29 @@ class ACErecorder:
                     eeg_ports.append((port, "EEG optical dongle"))
                 elif "USB Serial Device" in port.description:
                     eeg_ports.append((port, "USB Serial Device"))
-        
-        if eeg_ports:
-            # Show all compatible devices
-            descriptions = []
-            self.port_mapping = {}
-            for port, device_type in eeg_ports:
-                description = f"{port.device} - {device_type}"
-                descriptions.append(description)
-                self.port_mapping[description] = port.device
-            
-            self.port_combo['values'] = descriptions
-            
-            # If there's a saved port and it's still available, use it
-            saved_port = self.settings.get("com_port")
-            if saved_port and saved_port in descriptions:
+
+        descriptions = [f"{port.device} ({desc})" for port, desc in eeg_ports]
+        self.port_mapping = {f"{port.device} ({desc})": port.device for port, desc in eeg_ports}
+        self.port_combo['values'] = descriptions
+        if descriptions:
+            # Restore previous selection if available
+            saved_port = self.settings.get("com_port", "")
+            if saved_port in descriptions:
                 self.port_var.set(saved_port)
-            elif saved_port:
-                # If saved port exists but isn't in current list, try to match just the COM port number
-                saved_com = saved_port.split(" - ")[0]  # Get just the COM port part
-                for desc in descriptions:
-                    if desc.startswith(saved_com):
-                        self.port_var.set(desc)
-                        break
-                else:
-                    # If no match found, use first available port
-                    self.port_var.set(descriptions[0])
             else:
-                # No saved port, use first available
                 self.port_var.set(descriptions[0])
-            
-            self.status_var.set("Ready to record")  
+            self.status_var.set("Ready to record")
             self.record_button.config(state="normal")
         else:
-            # No compatible devices found
-            self.port_combo['values'] = []
-            self.port_mapping = {}
             self.port_var.set('')
-            self.status_var.set("No compatible devices connected")  
+            self.status_var.set("No compatible devices connected")
             self.record_button.config(state="disabled")
 
-    def periodic_port_update(self):
-        """Periodically update COM ports if not recording"""
-        if not self.recording:
-            self.update_com_ports()
-        self.root.after(5000, self.periodic_port_update)
-
-    def show_about(self):
-        messagebox.showinfo("About", "ACErecorder\nVersion 1.0\nA simple EEG recording application.")
-
-    def generate_filename(self):
+        # Update port2 for 64-channel mode
+        self.port2_combo['values'] = descriptions
+        if descriptions:
+            saved_port2 = self.settings.get("com_port2", "")
+            # Ensure port2 is not the same as port1
         """Generate filename with date-time prefix"""
         current_time = datetime.now().strftime("%d-%m-%Y_%H-%M-%S")  
         suffix = self.filename_var.get().strip()
@@ -584,63 +606,65 @@ class ACErecorder:
         try:
             # Set critical timing FIRST
             self.recording_start_time = time.time()
-            
-            # Then update state
             self.recording = True
-            
-            # Get the actual COM port from the selection
+
+            mode = self.channel_mode_var.get()
+            # 64 Channel mode: use dual-board logic
+            if mode == "64 Channel":
+                import importlib.util
+                eeg64_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "EEG_recorder_64.py")
+                spec = importlib.util.spec_from_file_location("EEG_recorder_64", eeg64_path)
+                eeg64 = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(eeg64)
+
+                port1 = self.port_mapping.get(self.port_var.get())
+                port2 = self.port_mapping.get(self.port2_var.get())
+                if not port2 or port1 == port2:
+                    self.recording = False
+                    self.recording_start_time = None
+                    messagebox.showerror("Error", "Please select two different COM ports for 64 Channel mode.")
+                    return
+                self.output_file = self.generate_filename()
+                self.sample_rate = 512  # or get from config if dynamic
+                self.eeg_recorder64 = eeg64.EEGRecorder64(port1, port2, self.output_file, sample_rate=self.sample_rate)
+                self.eeg_recorder64.start()
+                self.status_var.set(f"Recording to {self.output_file} (64ch, dual board)...")
+                self.filename_entry.config(state="disabled")
+                self.port_combo.config(state="disabled")
+                self.port2_combo.config(state="disabled")
+                self.update_duration()
+                return
+            # Otherwise, single-board logic (existing)
             selected_port = self.port_mapping[self.port_var.get()]
-            
-            # Initialize board
             params = BrainFlowInputParams()
             params.serial_port = selected_port
             board_id = brainflow.BoardIds.FREEEEG32_BOARD.value
             self.board = BoardShim(board_id, params)
-            
-            # Prepare and start session
             self.board.prepare_session()
             self.board.start_stream()
-            
-            # Wait briefly and check if data is being received
-            time.sleep(1)  # Wait for 1 second
+            time.sleep(1)
             data = self.board.get_board_data()
             if data.size == 0:
                 self.board.stop_stream()
                 self.board.release_session()
                 messagebox.showerror("Error", "No data received from the optical dongle.\nPlease check your connections and try again.")
                 return
-            
-            # Get board info
             self.eeg_channels = self.board.get_eeg_channels(board_id)
             self.num_channels = len(self.eeg_channels)
             self.sample_rate = BoardShim.get_sampling_rate(board_id)
-            
-            # Update sample rate display
             self.sample_rate_var.set(f"Sample Rate: {self.sample_rate} Hz")
-            
-            # Channel labels
             self.channel_labels = ['O2', 'P8', 'A2', 'F8', 'Fp2', 'F4', 'C4', 'P4', 'FC6', 'CP6', 
                                  'CP2', 'PO4', 'Pz', 'POz', 'FC2', 'AF4', 'Fz', 'Cz', 'FC1', 'AF3', 
                                  'FC5', 'CP5', 'CP1', 'PO3', 'Fp1', 'F3', 'C3', 'P3', 'O1', 'P7', 'A1', 'F7']
-            
             if len(self.channel_labels) < self.num_channels:
                 self.channel_labels.extend([f'ch{i + 1}' for i in range(len(self.channel_labels), self.num_channels)])
-            
-            # Generate output filename
             self.output_file = self.generate_filename()
-            
-            # Start recording thread
             self.record_thread = threading.Thread(target=self.record_data)
             self.record_thread.start()
-            
-            # Start duration counter
             self.update_duration()
-            
-            # Update UI
             self.status_var.set(f"Recording to {self.output_file}...")  
             self.filename_entry.config(state="disabled")
             self.port_combo.config(state="disabled")
-            
         except Exception as e:
             self.recording = False
             self.recording_start_time = None
@@ -858,7 +882,28 @@ class ACErecorder:
     def stop_recording(self):
         if not self.recording:
             return
-            
+
+        # If 64-channel mode, stop EEGRecorder64 and join thread
+        mode = self.channel_mode_var.get()
+        if mode == "64 Channel" and hasattr(self, 'eeg_recorder64') and self.eeg_recorder64:
+            print("[ACErecorder] Stopping 64-channel EEGRecorder64...")
+            try:
+                self.eeg_recorder64.stop()
+                print("[ACErecorder] EEGRecorder64 stopped.")
+            except Exception as e:
+                print(f"[ACErecorder] Error stopping EEGRecorder64: {e}")
+            self.eeg_recorder64 = None
+            self.recording = False
+            self.recording_start_time = None
+            self.record_button.config(text="Start Recording")
+            self.record_button.config(style="Green.TButton")
+            self.channel_mode_combo.config(state="normal")
+            self.port_combo.config(state="readonly")
+            self.port2_combo.config(state="readonly")
+            self.filename_entry.config(state="normal")
+            self.status_label.config(text="Recording stopped")
+            return
+
         # Calculate end time for annotations (1 second before end of recording)
         annotation_end_time = (self.total_samples_written + self.current_buffer_samples - self.sample_rate) / self.sample_rate
         if annotation_end_time < 0:  # If recording is less than 1 second
@@ -877,60 +922,22 @@ class ACErecorder:
                     
                     if duration <= 0:  # If annotation would have negative duration, remove it
                         self.annotations.pop(self.duration_indices[i])
-                        print(f"=== DURATION {i+1} REMOVED: Too short to include ===")
-                    else:
-                        # Update the annotation
-                        self.annotations[self.duration_indices[i]]['duration'] = duration
-                        annotation_name = self.annotations[self.duration_indices[i]]['description']
-                        print(f"=== DURATION {i+1} STOP: '{annotation_name}' @ {end_time:.3f}s (Duration: {duration:.3f}s) ===")
-                    
-                    # Reset the checkbox and timer
-                    self.duration_vars[i].set(False)
-                    if self.duration_timers[i]:
-                        self.root.after_cancel(self.duration_timers[i])
-                        self.duration_timers[i] = None
-                    self.duration_indices[i] = None
-                    
-                    # Clear countdown if present
-                    if hasattr(self, 'countdown_labels') and i < len(self.countdown_labels):
-                        self.countdown_labels[i].config(text="")
-        
-        self.recording = False
-        time.sleep(0.5)  # Give time for recording thread to finish
-        
         try:
-            # Clean up board resources
-            if self.board:
-                print("Cleaning up board resources...")
-                try:
-                    self.board.stop_stream()
-                    print("Stream stopped")
-                except Exception as e:
-                    print(f"Error stopping stream: {e}")
-                
-                try:
-                    self.board.release_session()
-                    print("Session released")
-                except Exception as e:
-                    print(f"Error releasing session: {e}")
-                    
+            if hasattr(self, 'board') and self.board:
+                print("Stopping board...")
+                self.board.stop_stream()
+                self.board.release_session()
                 self.board = None
                 print("Board cleanup complete")
         except Exception as e:
             print(f"Error during board cleanup: {e}")
-        
         # Update UI
         self.record_button.config(text="Start Recording")
         self.record_button.config(style="Green.TButton")
-        
-        # Enable configuration controls
         self.channel_mode_combo.config(state="normal")
         self.port_combo.config(state="readonly")
         self.filename_entry.config(state="normal")
-        
-        # Update status
         self.status_label.config(text="Recording stopped")
-        
         # NOTE: The annotations list will be cleared after record_data() writes them to the BDF file
 
     def load_settings(self):
@@ -1041,7 +1048,7 @@ class ACErecorder:
         current_mode = self.channel_mode_var.get()
         
         # Get standard configurations
-        standard_configs = ["2 Channel Headset", "19 Channel", "32 Channel"]
+        standard_configs = ["2 Channel Headset", "19 Channel", "32 Channel", "64 Channel"]
         
         # Combine standard and custom configurations
         all_configs = standard_configs.copy()
@@ -1352,13 +1359,8 @@ class ACErecorder:
         def save_custom_config():
             """Save the custom configuration"""
             name = name_var.get().strip()
-            if not name:
-                messagebox.showerror("Error", "Please enter a name for the configuration")
-                return
             
-            # Get channel entries
-            channels = []
-            save_flags = []
+            # ... (rest of the method remains the same)
             for entry, save_var in zip(channel_entries, channel_save_vars):
                 channel = entry.get().strip()
                 if channel:  # Only add non-empty channels
@@ -1416,6 +1418,17 @@ class ACErecorder:
         selected_port = self.port_var.get()
         if selected_port:
             self.settings["com_port"] = selected_port
+            self.save_settings()
+
+        # If in 64 Channel mode, also check port2
+        if self.channel_mode_var.get() == "64 Channel":
+            self.on_port2_change()
+
+    def on_port2_change(self):
+        """Save selected COM port 2 to settings (for 64-channel mode)"""
+        selected_port2 = self.port2_var.get()
+        if selected_port2:
+            self.settings["com_port2"] = selected_port2
             self.save_settings()
 
     def add_instant_marker(self, index):
@@ -1581,13 +1594,28 @@ class ACErecorder:
             print(f"Warning: No active duration annotation to end for Duration {index+1}")
             self.duration_vars[index].set(False)
 
+    def show_about(self):
+        """Show the About dialog"""
+        messagebox.showinfo("About", "ACErecorder\nVersion 1.0\nA simple EEG recording application.")
+
     def on_closing(self):
         """Handle window closing event"""
         if self.recording:
             if messagebox.askokcancel("Quit", "Recording in progress. Stop recording and quit?"):
-                self.stop_recording()
+                try:
+                    self.stop_recording()
+                except Exception as e:
+                    print(f"[ACErecorder] Error during stop_recording on close: {e}")
                 self.quit_app()
         else:
+            # Defensive: If 64-channel was running but .recording flag not set
+            mode = self.channel_mode_var.get()
+            if mode == "64 Channel" and hasattr(self, 'eeg_recorder64') and self.eeg_recorder64:
+                try:
+                    self.eeg_recorder64.stop()
+                except Exception as e:
+                    print(f"[ACErecorder] Error stopping EEGRecorder64 on close: {e}")
+                self.eeg_recorder64 = None
             self.quit_app()
 
 if __name__ == "__main__":

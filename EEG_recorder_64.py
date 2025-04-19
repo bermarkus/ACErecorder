@@ -90,40 +90,98 @@ class EEGRecorder64:
         file_initialized = False
         edf_writer = None
         try:
+            def mod_diff(a, b):
+                return (a - b) % 256
+
+            BUFFER_SIZE = 100
+            buf1 = []
+            buf2 = []
+            last_eeg1 = np.zeros(32)
+            last_eeg2 = np.zeros(32)
+
             while self.running and not self._stop_event.is_set():
                 data1 = self.board1.get_board_data()
                 data2 = self.board2.get_board_data()
-                if data1.shape[1] == 0 or data2.shape[1] == 0:
-                    time.sleep(0.05)
+                if data1.shape[1] > 0:
+                    for i in range(data1.shape[1]):
+                        eeg = data1[1:33, i]
+                        pkg = int(data1[pkg_idx1, i])
+                        buf1.append((pkg, eeg))
+                        last_eeg1 = eeg
+                        if len(buf1) > BUFFER_SIZE:
+                            buf1.pop(0)
+                if data2.shape[1] > 0:
+                    for i in range(data2.shape[1]):
+                        eeg = data2[1:33, i]
+                        pkg = int(data2[pkg_idx2, i])
+                        buf2.append((pkg, eeg))
+                        last_eeg2 = eeg
+                        if len(buf2) > BUFFER_SIZE:
+                            buf2.pop(0)
+                if len(buf1) == 0 or len(buf2) == 0:
+                    time.sleep(0.01)
                     continue
-                pkgs1 = data1[pkg_idx1, :]
-                pkgs2 = data2[pkg_idx2, :]
-
-                # Logging: count matches and drops
-                set1 = set(pkgs1)
-                set2 = set(pkgs2)
-                common_pkgs = np.intersect1d(pkgs1, pkgs2)
-                matched_samples += len(common_pkgs)
-                dropped_1 = set1 - set2
-                dropped_2 = set2 - set1
-                dropped_1_only += len(dropped_1)
-                dropped_2_only += len(dropped_2)
-
-                for pkg in common_pkgs:
-                    idxs1 = np.where(pkgs1 == pkg)[0]
-                    idxs2 = np.where(pkgs2 == pkg)[0]
-                    # For each matched package, merge data
-                    if len(idxs1) > 0 and len(idxs2) > 0:
-                        eeg1 = data1[1:33, idxs1[0]]  # 32 EEG
-                        eeg2 = data2[1:33, idxs2[0]]  # 32 EEG
-                        pkg1 = int(data1[pkg_idx1, idxs1[0]])
-                        pkg2 = int(data2[pkg_idx2, idxs2[0]])
-                        pkg1_centered = ((pkg1 + 128) % 256) - 128
-                        pkg2_centered = ((pkg2 + 128) % 256) - 128
-                        merged = np.concatenate([
-                            eeg1, eeg2, [pkg1_centered], [pkg2_centered]
-                        ]).astype(np.int32)
+                # Synchronize buffers
+                while buf1 and buf2:
+                    p1, eeg1 = buf1[0]
+                    p2, eeg2 = buf2[0]
+                    if p1 == p2:
+                        pkg1_centered = ((p1 + 128) % 256) - 128
+                        pkg2_centered = ((p2 + 128) % 256) - 128
+                        merged = np.concatenate([eeg1, eeg2, [pkg1_centered], [pkg2_centered]]).astype(np.int32)
                         buffer1.append(merged)
+                        matched_samples += 1
+                        buf1.pop(0)
+                        buf2.pop(0)
+                    elif mod_diff(p1, p2) < 128:
+                        # p1 ahead of p2: look for p1 in buf2
+                        idx2 = next((i for i, (pkg, _) in enumerate(buf2) if pkg == p1), -1)
+                        if 0 <= idx2 < BUFFER_SIZE:
+                            # Pad missing samples in buf2 with last_eeg2
+                            for _ in range(idx2):
+                                pkg2_miss, _ = buf2.pop(0)
+                                pkg1_centered = ((p1 + 128) % 256) - 128
+                                pkg2_centered = ((pkg2_miss + 128) % 256) - 128
+                                merged = np.concatenate([eeg1, last_eeg2, [pkg1_centered], [pkg2_centered]]).astype(np.int32)
+                                buffer1.append(merged)
+                                dropped_2_only += 1
+                                print(f"[EEGRecorder64] WARNING: True missing sample from board2 at pkg {pkg2_miss}, padding with last value.")
+                            continue  # Re-evaluate after popping
+                        else:
+                            if len(buf2) > BUFFER_SIZE:
+                                pkg2_miss, _ = buf2.pop(0)
+                                pkg1_centered = ((p1 + 128) % 256) - 128
+                                pkg2_centered = ((pkg2_miss + 128) % 256) - 128
+                                merged = np.concatenate([eeg1, last_eeg2, [pkg1_centered], [pkg2_centered]]).astype(np.int32)
+                                buffer1.append(merged)
+                                dropped_2_only += 1
+                                print(f"[EEGRecorder64] WARNING: True missing sample from board2 at pkg {pkg2_miss}, padding with last value.")
+                            else:
+                                break  # Wait for more data
+                    else:
+                        # p2 ahead of p1: look for p2 in buf1
+                        idx1 = next((i for i, (pkg, _) in enumerate(buf1) if pkg == p2), -1)
+                        if 0 <= idx1 < BUFFER_SIZE:
+                            for _ in range(idx1):
+                                pkg1_miss, _ = buf1.pop(0)
+                                pkg1_centered = ((pkg1_miss + 128) % 256) - 128
+                                pkg2_centered = ((p2 + 128) % 256) - 128
+                                merged = np.concatenate([last_eeg1, eeg2, [pkg1_centered], [pkg2_centered]]).astype(np.int32)
+                                buffer1.append(merged)
+                                dropped_1_only += 1
+                                print(f"[EEGRecorder64] WARNING: True missing sample from board1 at pkg {pkg1_miss}, padding with last value.")
+                            continue
+                        else:
+                            if len(buf1) > BUFFER_SIZE:
+                                pkg1_miss, _ = buf1.pop(0)
+                                pkg1_centered = ((pkg1_miss + 128) % 256) - 128
+                                pkg2_centered = ((p2 + 128) % 256) - 128
+                                merged = np.concatenate([last_eeg1, eeg2, [pkg1_centered], [pkg2_centered]]).astype(np.int32)
+                                buffer1.append(merged)
+                                dropped_1_only += 1
+                                print(f"[EEGRecorder64] WARNING: True missing sample from board1 at pkg {pkg1_miss}, padding with last value.")
+                            else:
+                                break
                     # Handle buffer overflow: write full blocks, keep remainder
                     while len(buffer1) >= self.sample_rate:
                         if not file_initialized:

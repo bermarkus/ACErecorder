@@ -81,6 +81,8 @@ INPUT_ORDER_32 = ["O2", "P8", "A2", "F8", "Fp2", "F4", "C4", "P4", "FC6", "CP6",
                   "Pz", "HR", "FC2", "AF4", "Fz", "Cz", "FC1", "AF3", "FC5", "CP5", "CP1", "PO3", 
                   "Fp1", "F3", "C3", "P3", "O1", "P7", "A1", "F7"]
 
+INPUT_ORDER_64 = [f"Ch{i}" for i in range(1, 65)]
+
 CHANNEL_CONFIGS = {
     "2 Channel Headset": {  # Updated to match UI
         "input_order": INPUT_ORDER_19,
@@ -145,7 +147,16 @@ class SplashScreen:
 class ACErecorder:
     def update_port2_visibility(self, *args):
         """Show/hide second COM port selector based on channel mode"""
-        if self.channel_mode_var.get() == "64 Channel":
+        mode = self.channel_mode_var.get()
+        is_64ch = False
+        if mode == "64 Channel":
+            is_64ch = True
+        elif mode.startswith("Custom: "):
+            custom_name = mode[8:]
+            config = self.custom_configs.get(custom_name)
+            if config and config.get("channel_count", 32) == 64:
+                is_64ch = True
+        if is_64ch:
             self.port2_combo.grid()
             self.port2_combo.configure(state="readonly")
         else:
@@ -1028,8 +1039,10 @@ class ACErecorder:
         
         # Add custom configs back from settings
         for name, config in self.custom_configs.items():
+            channel_count = config.get("channel_count", 32)
+            input_order = INPUT_ORDER_64 if channel_count == 64 else INPUT_ORDER_32
             CHANNEL_CONFIGS[f"Custom: {name}"] = {
-                "input_order": INPUT_ORDER_32,
+                "input_order": input_order,
                 "output_order": config["output_order"],
                 "description": f"Custom Configuration: {name}"
             }
@@ -1279,7 +1292,7 @@ class ACErecorder:
         """Open dialog to configure custom headset"""
         dialog = tk.Toplevel(self.root)
         dialog.title("Configure Custom Headset")
-        dialog.geometry("800x750")
+        dialog.geometry("800x800")
         dialog.transient(self.root)
         dialog.grab_set()
 
@@ -1291,6 +1304,31 @@ class ACErecorder:
         name_frame = ttk.Frame(main_frame)
         name_frame.pack(fill=tk.X, pady=(0, 10))
         ttk.Label(name_frame, text="Configuration Name:").pack(side=tk.LEFT)
+
+        # Add channel count selection (32 or 64)
+        channel_count_var = tk.IntVar(value=32)
+        if edit_channels is not None and len(edit_channels) == 64:
+            channel_count_var.set(64)
+        channel_count_frame = ttk.Frame(main_frame)
+        channel_count_frame.pack(fill=tk.X, pady=(0, 10))
+        ttk.Label(channel_count_frame, text="Channel Count:").pack(side=tk.LEFT)
+        channel_count_combo = ttk.Combobox(channel_count_frame, textvariable=channel_count_var, values=[32, 64], width=5, state='readonly')
+        channel_count_combo.pack(side=tk.LEFT)
+
+        # ... (rest of the dialog code follows as before, but use channel_count_var to determine number of channels)
+        # When saving, store channel_count and use correct input_order
+
+        # --- (Insert this logic into the save handler in the dialog) ---
+        # channel_count = channel_count_var.get()
+        # if channel_count == 64:
+        #     input_order = INPUT_ORDER_64
+        # else:
+        #     input_order = INPUT_ORDER_32
+        # Save config as: {"output_order": ..., "channel_count": channel_count}
+        # ------------------------------------------------------------
+
+        # (Continue with the rest of the function as before)
+
         name_var = tk.StringVar(value=edit_name if edit_name else "")
         name_entry = ttk.Entry(name_frame, textvariable=name_var)
         name_entry.pack(side=tk.LEFT, padx=(5, 0), expand=True, fill=tk.X)
@@ -1302,55 +1340,66 @@ class ACErecorder:
         blocks_frame = ttk.Frame(main_frame)
         blocks_frame.pack(fill=tk.BOTH, expand=True)
 
-        # Load existing custom configuration
-        custom_channels = edit_channels if edit_channels else [""] * 32
-        custom_channels.extend([""] * (32 - len(custom_channels)))
-        custom_channels = custom_channels[:32]
+        # Dynamic containers for 32ch and 64ch (side by side for 64ch)
+        blocks_32_frame = ttk.Frame(blocks_frame)
+        blocks_32_frame.grid(row=0, column=0, sticky="nsew")
+        blocks_64_frame = ttk.Frame(blocks_frame)
+        blocks_64_frame.grid(row=0, column=1, sticky="nsew")
 
-        # Create lists to store entries and checkboxes
-        channel_entries = []
-        channel_save_vars = []
+        # Helper to build channel entry groups
+        def build_channel_blocks(parent, start_ch, end_ch, edit_channels=None):
+            entries = []
+            save_vars = []
+            for block in range((end_ch - start_ch + 1) // 8):
+                block_frame = ttk.LabelFrame(parent, text=f"Channels {start_ch + block*8}-{start_ch + block*8 + 7}")
+                block_frame.grid(row=block//2, column=block%2, padx=10, pady=5, sticky="nsew")
+                header_frame = ttk.Frame(block_frame)
+                header_frame.pack(fill=tk.X, pady=(2,5), padx=5)
+                ttk.Label(header_frame, text="Channel", width=12).pack(side=tk.LEFT)
+                ttk.Label(header_frame, text="Label", width=25).pack(side=tk.LEFT, padx=(5,10))
+                ttk.Label(header_frame, text="Save to BDF").pack(side=tk.LEFT)
+                for i in range(8):
+                    channel_num = start_ch + block*8 + i - 1
+                    row_frame = ttk.Frame(block_frame)
+                    row_frame.pack(fill=tk.X, pady=2, padx=5)
+                    ttk.Label(row_frame, text=f"Channel {channel_num + 1}:", width=12).pack(side=tk.LEFT)
+                    entry = ttk.Entry(row_frame, width=20)
+                    entry.pack(side=tk.LEFT, padx=(5, 10))
+                    if edit_channels and channel_num < len(edit_channels):
+                        entry.insert(0, edit_channels[channel_num])
+                    entries.append(entry)
+                    save_var = tk.BooleanVar(value=bool(edit_channels[channel_num].strip()) if edit_channels and channel_num < len(edit_channels) else False)
+                    save_vars.append(save_var)
+                    save_cb = ttk.Checkbutton(row_frame, variable=save_var)
+                    save_cb.pack(side=tk.LEFT)
+                    def on_entry_change(event, entry=entry, save_var=save_var):
+                        has_content = bool(entry.get().strip())
+                        save_var.set(has_content)
+                    entry.bind('<KeyRelease>', on_entry_change)
+            parent.columnconfigure(0, weight=1)
+            parent.columnconfigure(1, weight=1)
+            return entries, save_vars
 
-        # Create 4 blocks of 8 channels each
-        for block in range(4):
-            # Create frame for this block
-            block_frame = ttk.LabelFrame(blocks_frame, text=f"Channels {block*8 + 1}-{block*8 + 8}")
-            block_frame.grid(row=block//2, column=block%2, padx=10, pady=5, sticky="nsew")
+        # Initial population
+        edit_channels_full = edit_channels if edit_channels else [""] * 64
+        edit_channels_full.extend([""] * (64 - len(edit_channels_full)))
+        entries_32, save_vars_32 = build_channel_blocks(blocks_32_frame, 1, 32, edit_channels_full)
+        entries_64, save_vars_64 = build_channel_blocks(blocks_64_frame, 33, 64, edit_channels_full)
 
-            # Create header row with "Save to BDF" label
-            header_frame = ttk.Frame(block_frame)
-            header_frame.pack(fill=tk.X, pady=(2,5), padx=5)
-            ttk.Label(header_frame, text="Channel", width=12).pack(side=tk.LEFT)
-            ttk.Label(header_frame, text="Label", width=25).pack(side=tk.LEFT, padx=(5,10))
-            ttk.Label(header_frame, text="Save to BDF").pack(side=tk.LEFT)
+        # Show/hide logic
+        def update_blocks_visibility(*args):
+            if channel_count_var.get() == 64:
+                blocks_64_frame.grid()
+                dialog.geometry("1450x800")  # Wider window for side-by-side
+            else:
+                blocks_64_frame.grid_remove()
+                dialog.geometry("800x800")  # Default width for 32ch
+        channel_count_var.trace_add('write', update_blocks_visibility)
+        update_blocks_visibility()
 
-            # Create channels in this block
-            for i in range(8):
-                channel_num = block * 8 + i
-                row_frame = ttk.Frame(block_frame)
-                row_frame.pack(fill=tk.X, pady=2, padx=5)
-
-                # Channel number label
-                ttk.Label(row_frame, text=f"Channel {channel_num + 1}:", width=12).pack(side=tk.LEFT)
-
-                # Entry field
-                entry = ttk.Entry(row_frame, width=20)
-                entry.pack(side=tk.LEFT, padx=(5, 10))
-                entry.insert(0, custom_channels[channel_num])
-                channel_entries.append(entry)
-
-                # Save checkbox (without text)
-                save_var = tk.BooleanVar(value=bool(custom_channels[channel_num].strip()))
-                channel_save_vars.append(save_var)
-                save_cb = ttk.Checkbutton(row_frame, variable=save_var)
-                save_cb.pack(side=tk.LEFT)
-                
-                # Bind entry changes to update checkbox
-                def on_entry_change(event, entry=entry, save_var=save_var):
-                    has_content = bool(entry.get().strip())
-                    save_var.set(has_content)
-                
-                entry.bind('<KeyRelease>', on_entry_change)
+        # Save handler combines both halves if 64ch, or just the first if 32ch
+        channel_entries = entries_32 + entries_64
+        channel_save_vars = save_vars_32 + save_vars_64
 
         # Configure grid weights
         blocks_frame.columnconfigure(0, weight=1)
@@ -1359,33 +1408,35 @@ class ACErecorder:
         def save_custom_config():
             """Save the custom configuration"""
             name = name_var.get().strip()
-            
-            # ... (rest of the method remains the same)
-            for entry, save_var in zip(channel_entries, channel_save_vars):
+            channel_count = channel_count_var.get()
+            channels = []
+            save_flags = []
+            if channel_count == 64:
+                # Use both sets
+                entries = channel_entries[:64]
+                saves = channel_save_vars[:64]
+            else:
+                entries = channel_entries[:32]
+                saves = channel_save_vars[:32]
+            for entry, save_var in zip(entries, saves):
                 channel = entry.get().strip()
-                if channel:  # Only add non-empty channels
+                if channel:
                     channels.append(channel)
                     save_flags.append(save_var.get())
-            
             if not channels:
                 messagebox.showerror("Error", "Please enter at least one channel")
                 return
-            
-            # Create configuration
             config = {
                 "channels": channels,
                 "save_flags": save_flags,
-                "input_order": channels.copy(),  # Use same channels as input order
-                "output_order": channels.copy()  # Use same channels as output order
+                "input_order": channels.copy(),
+                "output_order": channels.copy(),
+                "channel_count": channel_count
             }
-            
-            # Save to custom configs
             self.custom_configs[name] = config
             self.save_settings()
-            
-            # Update UI
             self.refresh_channel_mode_menu()
-            dialog.destroy()  # Use the local dialog variable instead of self.dialog
+            dialog.destroy()
             messagebox.showinfo("Success", "Custom channel configuration saved")
 
         def on_dialog_close():

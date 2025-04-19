@@ -93,7 +93,7 @@ class EEGRecorder64:
             def mod_diff(a, b):
                 return (a - b) % 256
 
-            BUFFER_SIZE = 100
+            BUFFER_SIZE = 20
             buf1 = []
             buf2 = []
             last_eeg1 = np.zeros(32)

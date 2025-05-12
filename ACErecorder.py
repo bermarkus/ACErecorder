@@ -19,6 +19,10 @@ import pyedflib
 import copy
 import winsound  # For playing bell sound
 
+# Import electrode monitoring modules
+import electrode_monitor
+import signal_detect
+
 # Try to import MNE-related packages with error handling
 try:
     import mne
@@ -239,6 +243,13 @@ class ACErecorder:
         self.countdown_vars = [tk.StringVar(value="") for _ in range(5)]  # For countdown display
         self.countdown_timers = [None] * 5  # Track countdown update jobs
         
+        # Electrode monitoring properties
+        self.electrode_monitor_window = None
+        self.electrode_check_timer = None
+        self.electrode_check_interval = 1000  # Check electrode status every 1 second
+        self.connection_status = {}
+        self.monitor_electrodes = tk.BooleanVar(value=self.settings.get("monitor_electrodes", True))
+        
         # Ensure EEG files directory exists
         if getattr(sys, 'frozen', False):
             # Running as compiled executable
@@ -453,13 +464,14 @@ class ACErecorder:
         else:
             self.channel_count_var.set("Channels: --")
             self.mode_description_var.set("")
-
+    
     def on_channel_mode_change(self, event=None):
         """Handle channel mode changes"""
         self.update_channel_info()
         self.save_settings()  # Save settings when headset type changes
 
     def create_menu(self):
+        """Create the application menu bar"""
         menubar = tk.Menu(self.root)
         self.root.config(menu=menubar)
         
@@ -473,10 +485,96 @@ class ACErecorder:
         file_menu.add_separator()
         file_menu.add_command(label="Exit", command=self.quit_app)
         
+        # Tools menu
+        tools_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Tools", menu=tools_menu)
+        tools_menu.add_checkbutton(label="Monitor Electrodes During Recording", 
+                                  variable=self.monitor_electrodes, 
+                                  command=self.update_electrode_monitoring_setting)
+        
         # Help menu
         help_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Help", menu=help_menu)
         help_menu.add_command(label="About", command=self.show_about)
+        
+    def update_electrode_monitoring_setting(self):
+        """Save electrode monitoring preference to settings"""
+        self.settings["monitor_electrodes"] = self.monitor_electrodes.get()
+        self.save_settings()
+        
+    def initialize_electrode_monitor(self):
+        """Initialize the electrode monitor window"""
+        if self.electrode_monitor_window is None:
+            # Create electrode monitor window
+            self.electrode_monitor_window = electrode_monitor.ElectrodeMonitorWindow(
+                master=self.root, 
+                title="EEG Electrode Connection Monitor"
+            )
+    
+    def check_electrode_connections(self):
+        """Check electrode connections during recording and update the monitor"""
+        if self.electrode_monitor_window is None or not self.recording:
+            return
+        
+        try:
+            # Get latest data from the board
+            data = self.board.get_current_board_data(int(self.sample_rate))  
+            
+            # Get current configuration
+            mode = self.channel_mode_var.get()
+            if mode in CHANNEL_CONFIGS:
+                config = CHANNEL_CONFIGS[mode]
+            elif mode.startswith("Custom: "):
+                custom_mode = mode[8:]  # Remove "Custom: " prefix
+                if custom_mode in self.custom_configs:
+                    config = self.custom_configs[custom_mode]
+                else:
+                    return
+            else:
+                return
+                
+            # Get output channel names
+            output_channels = config.get("output_order", [])
+            
+            # Check connections if we have enough data
+            if data.shape[1] > 0 and len(output_channels) > 0:
+                # Use signal_detect module to check electrode connections
+                self.connection_status = signal_detect.check_real_time_connection(
+                    data=data,
+                    channel_names=output_channels,
+                    window_size=10  # Check last 10 samples
+                )
+                
+                # Update the electrode monitor display
+                self.electrode_monitor_window.update_electrode_display(self.connection_status)
+                
+            # Schedule next check
+            self.electrode_check_timer = self.root.after(
+                self.electrode_check_interval, 
+                self.check_electrode_connections
+            )
+            
+        except Exception as e:
+            print(f"Error checking electrode connections: {e}")
+            traceback.print_exc()
+            
+    def close_electrode_monitor(self):
+        """Close the electrode monitor window and cancel timers"""
+        # Cancel any pending electrode checks
+        if self.electrode_check_timer is not None:
+            self.root.after_cancel(self.electrode_check_timer)
+            self.electrode_check_timer = None
+            
+        # Close the monitor window if it exists
+        if self.electrode_monitor_window is not None:
+            try:
+                # Try to properly close the monitor window
+                if hasattr(self.electrode_monitor_window, 'root'):
+                    self.electrode_monitor_window.root.destroy()
+            except Exception as e:
+                print(f"Error closing electrode monitor: {e}")
+                
+            self.electrode_monitor_window = None
 
     def update_com_ports(self):
         """Update the list of available COM ports"""
@@ -640,6 +738,17 @@ class ACErecorder:
             self.status_var.set(f"Recording to {self.output_file}...")  
             self.filename_entry.config(state="disabled")
             self.port_combo.config(state="disabled")
+            
+            # Initialize electrode monitoring if enabled
+            if self.monitor_electrodes.get():
+                try:
+                    self.initialize_electrode_monitor()
+                    # Start electrode connection monitoring
+                    self.check_electrode_connections()
+                    print("Electrode monitoring started")
+                except Exception as e:
+                    print(f"Error initializing electrode monitor: {e}")
+                    traceback.print_exc()
             
         except Exception as e:
             self.recording = False
@@ -858,6 +967,9 @@ class ACErecorder:
     def stop_recording(self):
         if not self.recording:
             return
+            
+        # Close electrode monitoring if it's active
+        self.close_electrode_monitor()
             
         # Calculate end time for annotations (1 second before end of recording)
         annotation_end_time = (self.total_samples_written + self.current_buffer_samples - self.sample_rate) / self.sample_rate

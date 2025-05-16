@@ -22,16 +22,19 @@ import signal_detect
 class SignalMonitorWindow:
     """A window that displays real-time EEG signal waveforms for multiple channels."""
     
-    def __init__(self, master=None, title="EEG Signal Monitor", sample_rate=250, time_window=10):
+    def __init__(self, master=None, title="EEG Signal Monitor", sample_rate=None, time_window=10):
         """
         Initialize the signal monitor window.
         
         Args:
             master: Parent tkinter window or None for standalone
             title: Window title
-            sample_rate: Sampling rate in Hz (default: 250 Hz)
+            sample_rate: Sampling rate in Hz (must be provided by the caller)
             time_window: Time window to display in seconds (default: 10 seconds)
         """
+        # Ensure sample_rate is provided
+        if sample_rate is None:
+            raise ValueError("sample_rate must be specified when creating SignalMonitorWindow")
         # Create a new window if no master provided
         if master is None:
             self.root = tk.Tk()
@@ -382,11 +385,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Visualize real-time EEG signals")
     parser.add_argument("--time", type=float, default=10.0, 
                         help="Time window in seconds (default: 10)")
+    parser.add_argument("--sample-rate", type=int, default=512, 
+                        help="Sample rate in Hz (default: 512)")
     
     args = parser.parse_args()
     
     # Create demo data - simulated sine waves
-    sample_rate = 250
+    sample_rate = args.sample_rate
     time_window = args.time
     n_samples = int(time_window * sample_rate)
     t = np.linspace(0, time_window, n_samples)
@@ -408,7 +413,7 @@ if __name__ == "__main__":
     data[3, :] = 50 * np.sin(2 * np.pi * 50 * t)
     
     # Just show the window with demo data
-    monitor = SignalMonitorWindow()
+    monitor = SignalMonitorWindow(sample_rate=sample_rate, time_window=time_window)
     monitor.initialize_channels(channel_names)
     monitor.update_from_data(data, channel_names)
     monitor.show()

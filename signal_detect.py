@@ -13,9 +13,8 @@ import os
 import json
 
 # Constants
-DISCONNECT_VALUE = -187500.0  # The value that indicates a disconnected sensor in converted data
-RAW_DISCONNECT_VALUES = [-8388608, -187500.0]  # Possible disconnect values in different formats
-TOLERANCE = 0.001  # Tolerance for floating point comparison
+# Using a single disconnect threshold based on raw board values
+DISCONNECT_THRESHOLD = -312000.0  # Value below which a channel is considered disconnected
 FLATLINE_THRESHOLD = 0.05  # Threshold for identifying flatlined signals (standard deviation)
 
 # Channel configurations from the main application
@@ -60,10 +59,10 @@ def is_disconnected(value: float) -> bool:
     Returns:
         bool: True if the sensor appears to be disconnected, False otherwise
     """
-    # Check against all possible disconnect values
-    for disconnect_val in RAW_DISCONNECT_VALUES:
-        if abs(value - disconnect_val) < TOLERANCE:
-            return True
+    # Simple threshold check based on raw board values
+    # A channel is disconnected if its value is below the disconnect threshold
+    if value <= DISCONNECT_THRESHOLD:
+        return True
     return False
 
 
@@ -83,9 +82,6 @@ def detect_disconnected_channels(data: np.ndarray, channel_names: List[str]) -> 
     # Print diagnostic information
     print(f"Analyzing {len(channel_names)} channels with data shape: {data.shape}")
     
-    # We know channels like F3, F4, A1, A2, sync, HR are working properly
-    # So we'll analyze their characteristics to better detect all channels
-    
     # Thresholds for signal analysis
     # If a signal's standard deviation is below this, it's considered flat
     std_dev_threshold = 0.5
@@ -93,6 +89,17 @@ def detect_disconnected_channels(data: np.ndarray, channel_names: List[str]) -> 
     range_multiplier = 5
     # Minimum meaningful change between consecutive samples
     min_change_threshold = 0.1
+    
+    # Special handling for known problematic channels
+    # The HR channel often shows small fluctuations around zero when it's actually disconnected
+    # This is a channel-specific threshold multiplier for more sensitive detection
+    channel_specific_thresholds = {
+        "HR": {
+            "std_dev": 0.3,  # More sensitive threshold for HR channel
+            "range": 1.0,     # More sensitive range threshold for HR channel
+            "change": 0.5     # Require more significant changes for HR channel
+        }
+    }
     
     for i, channel_name in enumerate(channel_names):
         if i < len(data):
@@ -114,9 +121,20 @@ def detect_disconnected_channels(data: np.ndarray, channel_names: List[str]) -> 
                     changes += 1
             change_ratio = changes / (len(channel_data) - 1) if len(channel_data) > 1 else 0
             
+            # Apply channel-specific thresholds if available
+            if channel_name in channel_specific_thresholds:
+                specific_thresholds = channel_specific_thresholds[channel_name]
+                channel_std_dev_threshold = specific_thresholds.get("std_dev", std_dev_threshold)
+                channel_range_threshold = specific_thresholds.get("range", std_dev_threshold * range_multiplier)
+                channel_change_threshold = specific_thresholds.get("change", 0.3)
+            else:
+                channel_std_dev_threshold = std_dev_threshold
+                channel_range_threshold = std_dev_threshold * range_multiplier
+                channel_change_threshold = 0.3
+            
             # Check for patterns that indicate disconnection
-            is_flatline = std_dev < std_dev_threshold and data_range < std_dev_threshold * range_multiplier
-            low_changes = change_ratio < 0.3  # Less than 30% of samples show meaningful change
+            is_flatline = std_dev < channel_std_dev_threshold and data_range < channel_range_threshold
+            low_changes = change_ratio < channel_change_threshold  # Less than threshold % of samples show meaningful change
             
             # Examine actual values for common disconnection patterns
             # Check if all values are extremely close to each other
@@ -276,21 +294,17 @@ def check_real_time_connection(data: np.ndarray,
         print("Only one sample available - using single-sample analysis")
         connection_status = {}
         
-        # Parameters for single-sample analysis
-        min_acceptable_value = 0.2  # Values below this might indicate disconnection
-        max_acceptable_value = 10000  # Values above this might indicate disconnection
-        
         for i, channel_name in enumerate(channel_names):
             if i < len(recent_data):
-                # For single samples, use value range checking
-                value = abs(recent_data[i][0])  # Absolute value for simpler comparison
+                # Get the raw value
+                value = recent_data[i][0]
                 
-                # Consider disconnected if value is extremely large or extremely small
-                if value > max_acceptable_value or value < min_acceptable_value:
-                    print(f"Channel {channel_name} appears disconnected - unusual value: {recent_data[i][0]}")
+                # Use our simple threshold check - only mark as disconnected if <= DISCONNECT_THRESHOLD
+                if value <= DISCONNECT_THRESHOLD:
+                    print(f"Channel {channel_name} appears disconnected - value: {value}")
                     connection_status[channel_name] = False
                 else:
-                    print(f"Channel {channel_name} appears connected - value: {recent_data[i][0]}")
+                    print(f"Channel {channel_name} appears connected - value: {value}")
                     connection_status[channel_name] = True
             else:
                 connection_status[channel_name] = None

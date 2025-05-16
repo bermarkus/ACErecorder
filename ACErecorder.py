@@ -511,6 +511,32 @@ class ACErecorder:
                 title="EEG Electrode Connection Monitor"
             )
     
+    def check_electrode_connections_from_buffer(self, buffer, channel_names):
+        """Check electrode connections using the buffer that was just written to BDF
+        
+        Args:
+            buffer: The data buffer that was just written to the BDF file
+            channel_names: List of channel names corresponding to the buffer rows
+        """
+        if self.electrode_monitor_window is None or not self.recording:
+            return
+            
+        try:
+            # The buffer already has the correct mapping (output channels)
+            # So we can directly use it for connection check without any remapping
+            self.connection_status = signal_detect.check_real_time_connection(
+                data=buffer,
+                channel_names=channel_names,
+                window_size=512  # Use all samples in the buffer
+            )
+            
+            # Update the electrode monitor display
+            self.electrode_monitor_window.update_electrode_display(self.connection_status)
+                
+        except Exception as e:
+            print(f"Error checking electrode connections from buffer: {e}")
+            traceback.print_exc()
+    
     def check_electrode_connections(self):
         """Check electrode connections during recording and update the monitor"""
         if self.electrode_monitor_window is None or not self.recording:
@@ -533,14 +559,30 @@ class ACErecorder:
             else:
                 return
                 
-            # Get output channel names
+            # Get channel mappings (same logic as in record_data)
             output_channels = config.get("output_order", [])
+            input_order = config.get("input_order", [])
             
             # Check connections if we have enough data
             if data.shape[1] > 0 and len(output_channels) > 0:
-                # Use signal_detect module to check electrode connections
+                # Create proper channel mapping (same as in record_data)
+                channel_mapping = {}  # Maps output index to input index
+                for out_idx, out_channel in enumerate(output_channels):
+                    if out_channel in input_order:
+                        channel_mapping[out_idx] = input_order.index(out_channel)
+                
+                # Get EEG channel indices
+                eeg_channels = self.board.get_eeg_channels(self.board.board_id)
+                
+                # Reorder the data according to the mapping
+                mapped_data = np.zeros((len(output_channels), data.shape[1]))
+                for out_idx, in_idx in channel_mapping.items():
+                    if in_idx < len(eeg_channels):
+                        mapped_data[out_idx] = data[eeg_channels[in_idx]]
+                
+                # Now use properly mapped data for connection check
                 self.connection_status = signal_detect.check_real_time_connection(
-                    data=data,
+                    data=mapped_data,
                     channel_names=output_channels,
                     window_size=10  # Check last 10 samples
                 )
@@ -896,6 +938,13 @@ class ACErecorder:
                                 f.writeSamples(buffer)
                                 self.total_samples_written += self.sample_rate
                                 print(f"Wrote {self.sample_rate} samples to file")
+                                
+                                # Check electrode connections using this buffer that was just written
+                                # But only if electrode monitoring is enabled
+                                if self.monitor_electrodes.get() and self.electrode_monitor_window is not None:
+                                    # Pass the complete buffer to check electrodes using this data
+                                    # This is much more efficient than getting new data from the board
+                                    self.check_electrode_connections_from_buffer(buffer, output_channels)
                             except Exception as e:
                                 print(f"Error writing samples: {e}")
                                 traceback.print_exc()

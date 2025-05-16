@@ -66,7 +66,7 @@ class ElectrodeMonitorWindow:
             'CP5': (-0.6, -0.3), 'CP6': (0.6, -0.3),
             'PO3': (-0.3, -0.7), 'PO4': (0.3, -0.7),
             # Special channels - placed at the bottom of display
-            'HR': (0.5, -1.1), 'sync': (-0.5, -1.1)
+            'HR': (-0.5, -1.1), 'sync': (0.5, -1.1)
         }
         
         # Create main frame with padding

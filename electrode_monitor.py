@@ -89,13 +89,7 @@ class ElectrodeMonitorWindow:
         self.plot_frame = ttk.Frame(self.main_frame)
         self.plot_frame.pack(fill=tk.BOTH, expand=True, pady=5)
         
-        # Create and place summary label
-        self.summary_label = ttk.Label(
-            self.main_frame, 
-            text="Ready to monitor electrode connections", 
-            font=('Arial', 10, 'bold')
-        )
-        self.summary_label.pack(side=tk.BOTTOM, fill=tk.X, pady=5)
+        # Summary label removed as requested
         
         # Create initial plot with all electrodes gray (unknown status)
         self.fig, self.ax = plt.subplots(figsize=(5, 5))

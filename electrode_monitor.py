@@ -92,13 +92,9 @@ class ElectrodeMonitorWindow:
         self.main_frame = ttk.Frame(self.root, padding="10")
         self.main_frame.pack(fill=tk.BOTH, expand=True)
         
-        # Create frame for the plot
-        self.plot_frame = ttk.Frame(self.main_frame)
-        self.plot_frame.pack(fill=tk.BOTH, expand=True, pady=5)
-        
-        # Create a frame for controls at the bottom
+        # Create a frame for controls at the TOP of the window
         self.controls_frame = ttk.Frame(self.main_frame)
-        self.controls_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=5)
+        self.controls_frame.pack(side=tk.TOP, fill=tk.X, pady=5)
         
         # Add slider to adjust line noise threshold
         self.threshold_frame = ttk.Frame(self.controls_frame)
@@ -130,6 +126,10 @@ class ElectrodeMonitorWindow:
             font=("Arial", 10, "bold")
         )
         self.noise_status_label.pack(side=tk.RIGHT, padx=5)
+        
+        # Create frame for the plot AFTER the controls
+        self.plot_frame = ttk.Frame(self.main_frame)
+        self.plot_frame.pack(fill=tk.BOTH, expand=True, pady=5)
         
         # Create initial plot with all electrodes gray (unknown status)
         # Ensure matplotlib is in non-interactive mode for all our work
@@ -181,6 +181,26 @@ class ElectrodeMonitorWindow:
             self.ax.set_xlim(-1.2, 1.2)
             self.ax.set_ylim(-1.2, 1.2)
             self.ax.axis('off')
+            
+            # Draw head outline if it doesn't exist
+            if not hasattr(self, 'head_circle') or self.head_circle is None:
+                # Draw head circle
+                self.head_circle = plt.Circle((0, 0), 0.9, fill=False, color='black', linewidth=2, zorder=1)
+                self.ax.add_patch(self.head_circle)
+                
+                # Draw nose as an inverted V shape
+                nose_x = [-0.05, 0, 0.05]
+                nose_y = [0.9, 1.0, 0.9]
+                self.nose, = self.ax.plot(nose_x, nose_y, 'k-', linewidth=2, zorder=1)
+                
+                # Draw ears (left and right)
+                left_ear_x = [-1.0, -1.1, -1.1, -1.0]
+                left_ear_y = [0.2, 0.1, -0.1, -0.2]
+                right_ear_x = [1.0, 1.1, 1.1, 1.0]
+                right_ear_y = [0.2, 0.1, -0.1, -0.2]
+                
+                self.left_ear, = self.ax.plot(left_ear_x, left_ear_y, 'k-', linewidth=2, zorder=1)
+                self.right_ear, = self.ax.plot(right_ear_x, right_ear_y, 'k-', linewidth=2, zorder=1)
             
             # Process exempt channels that should always be green even with noise
             exempt_channels = ['HR', 'sync']

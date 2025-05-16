@@ -612,6 +612,9 @@ class ACErecorder:
             try:
                 # Try to properly close the monitor window
                 if hasattr(self.electrode_monitor_window, 'root'):
+                    # Force bypass any custom window close handling
+                    self.electrode_monitor_window.root.protocol("WM_DELETE_WINDOW", self.electrode_monitor_window.root.destroy)
+                    # Now destroy the window
                     self.electrode_monitor_window.root.destroy()
             except Exception as e:
                 print(f"Error closing electrode monitor: {e}")

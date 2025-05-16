@@ -8,6 +8,7 @@ in a topographic layout matching the standard 10-20 system.
 import tkinter as tk
 from tkinter import ttk
 import numpy as np
+import sys
 from typing import Dict, List, Optional, Tuple, Union
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
@@ -43,6 +44,17 @@ class ElectrodeMonitorWindow:
         window_height = 500
         self.root.geometry(f"{window_width}x{window_height}")
         self.root.resizable(True, True)
+        
+        # Make window always stay on top
+        self.root.attributes("-topmost", True)
+        
+        # Ensure the window has proper controls on Windows
+        # Wait for window to be created and get its handle
+        self.root.update()
+        self._configure_window_controls()
+            
+        # Disable the close button (X) completely
+        self.root.protocol("WM_DELETE_WINDOW", lambda: None)
         
         # Standard 10-20 system electrode positions
         self.positions = {
@@ -85,11 +97,6 @@ class ElectrodeMonitorWindow:
         )
         self.summary_label.pack(side=tk.BOTTOM, fill=tk.X, pady=5)
         
-        # Close button for standalone window
-        if self.standalone:
-            close_button = ttk.Button(self.main_frame, text="Close", command=self.root.destroy)
-            close_button.pack(side=tk.BOTTOM, pady=5)
-        
         # Create initial plot with all electrodes gray (unknown status)
         self.fig, self.ax = plt.subplots(figsize=(5, 5))
         self.canvas = FigureCanvasTkAgg(self.fig, master=self.plot_frame)
@@ -110,6 +117,22 @@ class ElectrodeMonitorWindow:
         # Clear the previous plot
         self.ax.clear()
         
+        # Calculate status text for display within the plot
+        if connection_status:
+            # Get the list of disconnected electrodes
+            disconnected_electrodes = [electrode for electrode, status in connection_status.items() if status is False]
+            
+            if disconnected_electrodes:
+                # Format as "Fp1, Pz, HR no signal"
+                status_text = f"{', '.join(disconnected_electrodes)} no signal"
+                status_color = 'red'
+            else:
+                status_text = "signal on all channels"
+                status_color = 'green'
+        else:
+            status_text = "No connection data available"
+            status_color = 'black'
+        
         # Draw a head outline
         circle = plt.Circle((0, 0), 0.95, fill=False, color='black', linewidth=2)
         self.ax.add_patch(circle)
@@ -126,6 +149,10 @@ class ElectrodeMonitorWindow:
         right_ear_y = [0.1, 0.05, -0.05, -0.1]
         self.ax.plot(left_ear_x, left_ear_y, 'k-', linewidth=2)
         self.ax.plot(right_ear_x, right_ear_y, 'k-', linewidth=2)
+        
+        # Add status text at the top of the plot
+        self.ax.text(0, 1.3, status_text, ha='center', va='center',
+                    fontsize=12, fontweight='bold', color=status_color)
         
         # Plot each electrode with appropriate color
         for electrode, position in self.positions.items():
@@ -166,36 +193,45 @@ class ElectrodeMonitorWindow:
         
         # Update the canvas
         self.canvas.draw()
-        
-        # Update summary label
-        if connection_status:
-            connected = sum(1 for status in connection_status.values() if status is True)
-            disconnected = sum(1 for status in connection_status.values() if status is False)
-            total = sum(1 for status in connection_status.values() if status is not None)
-            
-            if disconnected > 0:
-                self.summary_label.config(
-                    text=f"ALERT: {disconnected} electrodes disconnected! ({connected}/{total} connected)",
-                    foreground='red'
-                )
-            else:
-                self.summary_label.config(
-                    text=f"All electrodes connected properly ({connected}/{total})",
-                    foreground='green'
-                )
-        else:
-            self.summary_label.config(
-                text="No connection data available",
-                foreground='black'
-            )
 
+    def _configure_window_controls(self):
+        """Configure window to have proper minimize button on Windows"""
+        if sys.platform == 'win32':
+            try:
+                # Import Windows API modules
+                import ctypes
+                from ctypes import windll
+                from ctypes.wintypes import HWND, LONG
+                
+                # Window style constants
+                GWL_STYLE = -16
+                WS_MINIMIZEBOX = 0x00020000
+                WS_MAXIMIZEBOX = 0x00010000
+                
+                # Get window handle
+                hwnd = HWND(int(self.root.winfo_id()))
+                
+                # Get current style
+                style = windll.user32.GetWindowLongW(hwnd, GWL_STYLE)
+                
+                # Add minimize box to style, remove maximize box
+                style |= WS_MINIMIZEBOX
+                style &= ~WS_MAXIMIZEBOX
+                
+                # Set the new style
+                windll.user32.SetWindowLongW(hwnd, GWL_STYLE, style)
+            except Exception as e:
+                print(f"Could not configure window controls: {e}")
+    
+
+        
     def show(self):
         """Show the window and start the main loop if standalone"""
         if self.standalone:
             self.root.mainloop()
         else:
             self.root.grab_set()  # Make window modal
-
+            
     def update_from_data(self, data: np.ndarray, 
                          channel_names: List[str], 
                          window_size: int = 10):

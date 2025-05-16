@@ -19,9 +19,10 @@ import pyedflib
 import copy
 import winsound  # For playing bell sound
 
-# Import electrode monitoring modules
+# Import monitoring modules
 import electrode_monitor
 import signal_detect
+import signal_monitor
 
 # Try to import MNE-related packages with error handling
 try:
@@ -249,6 +250,12 @@ class ACErecorder:
         self.electrode_check_interval = 1000  # Check electrode status every 1 second
         self.connection_status = {}
         self.monitor_electrodes = tk.BooleanVar(value=self.settings.get("monitor_electrodes", True))
+        
+        # Signal monitor properties
+        self.signal_monitor_window = None
+        self.signal_update_timer = None
+        self.signal_update_interval = 100  # Update signal display every 100ms
+        self.monitor_signals = tk.BooleanVar(value=self.settings.get("monitor_signals", True))
         
         # Ensure EEG files directory exists
         if getattr(sys, 'frozen', False):
@@ -489,8 +496,11 @@ class ACErecorder:
         tools_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Tools", menu=tools_menu)
         tools_menu.add_checkbutton(label="Monitor Electrodes During Recording", 
-                                  variable=self.monitor_electrodes, 
-                                  command=self.update_electrode_monitoring_setting)
+                                   variable=self.monitor_electrodes, 
+                                   command=self.update_electrode_monitoring_setting)
+        tools_menu.add_checkbutton(label="Show Signal Monitor During Recording", 
+                                   variable=self.monitor_signals, 
+                                   command=self.update_signal_monitoring_setting)
         
         # Help menu
         help_menu = tk.Menu(menubar, tearoff=0)
@@ -500,6 +510,11 @@ class ACErecorder:
     def update_electrode_monitoring_setting(self):
         """Save electrode monitoring preference to settings"""
         self.settings["monitor_electrodes"] = self.monitor_electrodes.get()
+        self.save_settings()
+        
+    def update_signal_monitoring_setting(self):
+        """Save signal monitoring preference to settings"""
+        self.settings["monitor_signals"] = self.monitor_signals.get()
         self.save_settings()
         
     def initialize_electrode_monitor(self):
@@ -679,6 +694,128 @@ class ACErecorder:
                 plt.close('all')
             except Exception as e:
                 print(f"Error closing matplotlib figures: {e}")
+                
+    def initialize_signal_monitor(self):
+        """Initialize the signal monitor window"""
+        # Close any existing window to prevent duplicates
+        self.close_signal_monitor()
+            
+        try:
+            # Explicitly ensure matplotlib is in non-interactive mode
+            import matplotlib
+            matplotlib.use('TkAgg')
+            import matplotlib.pyplot as plt
+            plt.ioff()
+            
+            # Create the window
+            self.signal_monitor_window = signal_monitor.SignalMonitorWindow(
+                master=self.root,
+                title="EEG Signal Monitor",
+                sample_rate=self.sample_rate,
+                time_window=10  # Show 10 seconds of data
+            )
+            
+            # Make sure it's visible
+            self.signal_monitor_window.root.attributes("-topmost", True)
+            self.signal_monitor_window.root.deiconify()
+            self.signal_monitor_window.root.update()
+            
+            print("Successfully created signal monitor window")
+            
+            # Start the signal update timer
+            if self.signal_update_timer is not None:
+                self.root.after_cancel(self.signal_update_timer)
+                
+            self.signal_update_timer = self.root.after(
+                self.signal_update_interval, 
+                self.update_signal_display
+            )
+        except Exception as e:
+            print(f"Error initializing signal monitor: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def update_signal_display(self):
+        """Update the signal display with the latest data"""
+        if self.signal_monitor_window is None or not self.recording:
+            return
+        
+        try:
+            # Get latest data from the board
+            data = self.board.get_current_board_data(int(self.sample_rate * 2))  # Get 2 seconds of data
+            
+            # Get current configuration
+            mode = self.channel_mode_var.get()
+            if mode in CHANNEL_CONFIGS:
+                config = CHANNEL_CONFIGS[mode]
+            elif mode.startswith("Custom: "):
+                custom_mode = mode[8:]  # Remove "Custom: " prefix
+                if custom_mode in self.custom_configs:
+                    config = self.custom_configs[custom_mode]
+                else:
+                    return
+            else:
+                return
+                
+            # Get channel mappings (same logic as in record_data)
+            output_channels = config.get("output_order", [])
+            input_order = config.get("input_order", [])
+            
+            # Update display if we have enough data
+            if data.shape[1] > 0 and len(output_channels) > 0:
+                # Create proper channel mapping (same as in record_data)
+                channel_mapping = {}  # Maps output index to input index
+                for out_idx, out_channel in enumerate(output_channels):
+                    if out_channel in input_order:
+                        channel_mapping[out_idx] = input_order.index(out_channel)
+                
+                # Get EEG channel indices
+                eeg_channels = self.board.get_eeg_channels(self.board.board_id)
+                
+                # Reorder the data according to the mapping
+                mapped_data = np.zeros((len(output_channels), data.shape[1]))
+                for out_idx, in_idx in channel_mapping.items():
+                    if in_idx < len(eeg_channels):
+                        mapped_data[out_idx] = data[eeg_channels[in_idx]]
+                
+                # Now use properly mapped data for signal monitor update
+                self.signal_monitor_window.update_from_data(
+                    mapped_data,
+                    output_channels
+                )
+                
+            # Schedule next update
+            self.signal_update_timer = self.root.after(
+                self.signal_update_interval, 
+                self.update_signal_display
+            )
+            
+        except Exception as e:
+            print(f"Error updating signal display: {e}")
+            traceback.print_exc()
+            
+    def close_signal_monitor(self):
+        """Close the signal monitor window and cancel timers"""
+        # Cancel the signal update timer
+        if self.signal_update_timer is not None:
+            self.root.after_cancel(self.signal_update_timer)
+            self.signal_update_timer = None
+            
+        # Close the signal monitor window
+        if self.signal_monitor_window is not None:
+            try:
+                # Close matplotlib figure properly first
+                if hasattr(self.signal_monitor_window, 'fig') and self.signal_monitor_window.fig is not None:
+                    import matplotlib.pyplot as plt
+                    plt.close(self.signal_monitor_window.fig)
+                    
+                # Temporarily allow the window to be closed
+                self.signal_monitor_window.root.protocol("WM_DELETE_WINDOW", self.signal_monitor_window.root.destroy)
+                self.signal_monitor_window.root.destroy()
+            except Exception as e:
+                print(f"Error closing signal monitor window: {e}")
+            
+            self.signal_monitor_window = None
 
     def update_com_ports(self):
         """Update the list of available COM ports"""
@@ -852,6 +989,15 @@ class ACErecorder:
                     print("Electrode monitoring started")
                 except Exception as e:
                     print(f"Error initializing electrode monitor: {e}")
+                    traceback.print_exc()
+            
+            # Initialize signal monitor if enabled
+            if self.monitor_signals.get():
+                try:
+                    self.initialize_signal_monitor()
+                    print("Signal monitor started")
+                except Exception as e:
+                    print(f"Error initializing signal monitor: {e}")
                     traceback.print_exc()
             
         except Exception as e:
@@ -1111,6 +1257,9 @@ class ACErecorder:
             
         # Close electrode monitoring if it's active
         self.close_electrode_monitor()
+        
+        # Close signal monitoring if it's active
+        self.close_signal_monitor()
             
         # Calculate end time for annotations (1 second before end of recording)
         annotation_end_time = (self.total_samples_written + self.current_buffer_samples - self.sample_rate) / self.sample_rate

@@ -41,13 +41,14 @@ class BDFSignalMonitor:
         self.app = QtWidgets.QApplication.instance()
         if not self.app:
             self.app = QtWidgets.QApplication([])
-        
+
     def create_window(self):
         """Create the signal monitor window if it doesn't exist"""
         if self.window is None:
             # Create main window
             self.window = QtWidgets.QMainWindow()
             self.window.setWindowTitle("BDF Signal Monitor")
+            self.window.setGeometry(100, 100, 1200, 800)  # Default size
             
             # Set window to stay on top
             self.window.setWindowFlags(
@@ -114,7 +115,7 @@ class BDFSignalMonitor:
             self.window.show()
             self.window.raise_()
             print("BDF Signal Monitor window created and displayed")
-    
+            
     def handle_close_event(self, event):
         """Handle window close event - redirect to minimize"""
         self.minimize_window()
@@ -257,7 +258,7 @@ class BDFSignalMonitor:
                             if self.num_channels == 0:
                                 self.num_channels = len(raw.ch_names)
                                 self.channel_labels = raw.ch_names
-                                self.channel_offsets = np.arange(self.num_channels) * self.y_scale * 2
+                                self.channel_offsets = np.arange(self.num_channels) * 2.0
                             
                             # Print some debug info about the data
                             data_min = np.min(data)
@@ -549,6 +550,7 @@ class BDFSignalMonitor:
             
         self.plot_widget.setTitle(title, color='white', size='14pt')
         self.plot_widget.showGrid(x=True, y=True, alpha=0.5)
+
 
 # For testing
 if __name__ == "__main__":

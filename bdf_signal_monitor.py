@@ -60,6 +60,8 @@ class BDFSignalMonitor:
             central_widget = QtWidgets.QWidget()
             self.window.setCentralWidget(central_widget)
             main_layout = QtWidgets.QVBoxLayout(central_widget)
+            main_layout.setContentsMargins(0, 0, 0, 0)
+            main_layout.setSpacing(0)
             
             # Create a button bar at the top
             button_bar = QtWidgets.QHBoxLayout()
@@ -82,10 +84,26 @@ class BDFSignalMonitor:
             # Set up PyQtGraph
             pg.setConfigOptions(antialias=False)  # Disable antialiasing for better performance
             
-            # Create the plot widget with dark background
-            self.plot_widget = pg.PlotWidget()
+            # Create the plot widget with dark background and no border
+            self.plot_widget = pg.PlotWidget(background='#404040')
             self.plot_widget.setBackground('#404040')  # Dark gray background
-            self.plot_widget.showGrid(x=True, y=True, alpha=0.3)
+            
+            # Disable default grid - we'll add custom grid lines
+            self.plot_widget.showGrid(x=False, y=False)
+            
+            # Create darker gray pen for the grid lines
+            self.grid_pen = pg.mkPen(color='#606060', width=1)
+            
+            # Completely remove all border and margin elements except bottom axis
+            for side in ['top', 'right', 'left']:
+                self.plot_widget.showAxis(side, False)  # Hide these axes completely
+                
+            # Apply border removal stylesheet to the whole widget
+            self.plot_widget.setStyleSheet("""                
+                QGraphicsView { border: 0px; }
+                QGraphicsScene { border: 0px; }
+                QFrame { border: 0px; }
+            """)
             
             # Add plot widget to main layout
             main_layout.addWidget(self.plot_widget)
@@ -94,10 +112,15 @@ class BDFSignalMonitor:
             self.plot_widget.setLabel('bottom', 'Time', 'seconds', color='white')
             self.plot_widget.getAxis('left').setStyle(showValues=False)  # Hide values on left axis
             
-            # Set plot to take up full width by removing margins
+            # Set plot to take up full width by removing all margins and borders
             self.plot_widget.getPlotItem().getViewBox().setDefaultPadding(0)  # Remove padding
             self.plot_widget.setContentsMargins(0, 0, 0, 0)  # Remove content margins
             self.plot_widget.getPlotItem().setContentsMargins(0, 0, 0, 0)  # Remove plot margins
+            
+            # Remove all spacing around the plot area
+            self.plot_widget.centralWidget.setContentsMargins(0, 0, 0, 0)
+            self.plot_widget.centralWidget.layout.setContentsMargins(0, 0, 0, 0)
+            self.plot_widget.centralWidget.layout.setSpacing(0)
             
             # Initial title
             self.plot_widget.setTitle("EEG Signal Monitor (Last 10 seconds)", color='white', size='14pt')
@@ -115,6 +138,21 @@ class BDFSignalMonitor:
             # Remove padding and margins to make the plot fill the entire space
             self.plot_widget.plotItem.vb.border = pg.mkPen(None)  # No border
             self.plot_widget.getPlotItem().getViewBox().setDefaultPadding(0)
+            
+            # Configure bottom axis to have zero-width border and no tick marks
+            self.plot_widget.getAxis('bottom').setPen(pg.mkPen(None))  # Invisible axis line
+            self.plot_widget.getAxis('bottom').setStyle(tickLength=0)  # No tick marks
+            
+            # Make the entire plot expand to edges
+            self.plot_widget.getPlotItem().setMenuEnabled(False)  # Disable right-click menu
+            self.plot_widget.getPlotItem().layout.setContentsMargins(0, 0, 0, 0)
+            
+            # Make the ViewBox completely borderless
+            self.plot_widget.getPlotItem().getViewBox().setBorder(pen=None)
+            
+            # Additional styling to remove any remaining borders
+            self.plot_widget.setFrameStyle(QtWidgets.QFrame.NoFrame)
+            self.plot_widget.viewport().setStyleSheet("border: 0px; padding: 0px; margin: 0px;")
             
             # Handle close event - redirect to minimize
             self.window.closeEvent = self.handle_close_event
@@ -394,25 +432,7 @@ class BDFSignalMonitor:
                 # Create yellow pen for all plots
                 yellow_pen = pg.mkPen(color='#ffff00', width=1)
                 
-                # Plot all channels
-                for i in range(min(self.num_channels, data.shape[0])):
-                    # Apply individual channel scaling if enabled
-                    if self.per_channel_scale:
-                        channel_scale = self.channel_scales[i]
-                    else:
-                        channel_scale = scale_factor
-                        
-                    # Center the signal around its offset
-                    scaled_data = data[i] * channel_scale
-                    
-                    # Plot with yellow color
-                    plot = self.plot_widget.plot(
-                        times, 
-                        scaled_data + self.channel_offsets[i],
-                        pen=yellow_pen,
-                        name=self.channel_labels[i]
-                    )
-                    self.plots.append(plot)
+                # Plots were already created above
                 
                 # Add channel labels as text items on the right side
                 # First clear any existing label items
@@ -444,26 +464,86 @@ class BDFSignalMonitor:
                         label.setPos(right_edge, self.channel_offsets[i])
                         self.plot_widget.addItem(label)
                 
-                # Set time axis to show last window_length seconds
+                # Set time axis to show a fixed scale from -10 to 0 seconds
                 if len(times) > 0:
-                    # Calculate precise start and end times
+                    # Calculate precise start and end times for data display
                     end_time = times[-1]
                     start_time = end_time - self.window_length
                     
-                    # Set exact limits
+                    # Set exact limits for the data
                     self.plot_widget.setXRange(start_time, end_time)
                     
-                    # Set tick spacing to 1 second
-                    tick_start = int(np.ceil(start_time))
-                    tick_end = int(np.floor(end_time))
-                    if tick_end - tick_start < self.window_length - 1:
-                        tick_end = tick_start + int(self.window_length) - 1
-                        
+                    # Create ticks with fixed labels from -10 to 0
                     x_ticks = []
-                    for i in range(tick_start, tick_end + 1):
-                        x_ticks.append((i, str(i)))
+                    # Create major ticks at each second
+                    for i in range(-self.window_length, 1):
+                        # Map the relative time (-10 to 0) to actual data time
+                        actual_time = end_time + i  # Maps -10 to end_time-10, -9 to end_time-9, etc.
+                        x_ticks.append((actual_time, str(i)))  # Shows -10, -9, ..., -1, 0
                     
+                    # Clear the plot for fresh drawing
+                    self.plot_widget.clear()  # Clear all previous items 
+                    self.plots = []  # Reset plots list
+                    
+                    # Add vertical grid lines first (so they appear behind the data)
+                    for i in range(-self.window_length, 1):
+                        grid_line = pg.InfiniteLine(
+                            pos=end_time + i,
+                            angle=90,
+                            pen=self.grid_pen
+                        )
+                        self.plot_widget.addItem(grid_line)
+                        
+                    # Update ticks
                     self.plot_widget.getAxis('bottom').setTicks([x_ticks])
+                    
+                    # Update the bottom axis label to clarify the time scale
+                    self.plot_widget.setLabel('bottom', 'Time (seconds ago)', color='white')
+                    
+                    # Now plot all channels
+                    # Create yellow pen for all plots
+                    yellow_pen = pg.mkPen(color='#ffff00', width=1)
+                    
+                    for i in range(min(self.num_channels, data.shape[0])):
+                        # Apply individual channel scaling if enabled
+                        if self.per_channel_scale:
+                            channel_scale = self.channel_scales[i]
+                        else:
+                            channel_scale = scale_factor
+                            
+                        # Center the signal around its offset
+                        scaled_data = data[i] * channel_scale
+                        
+                        # Plot with yellow color
+                        plot = self.plot_widget.plot(
+                            times, 
+                            scaled_data + self.channel_offsets[i],
+                            pen=yellow_pen,
+                            name=self.channel_labels[i]
+                        )
+                        self.plots.append(plot)
+                    
+                    # Add channel labels as text items on the right side
+                    # Determine which channels to show labels for
+                    label_indices = []
+                    if self.num_channels > 30:
+                        # For many channels, only label every 5th channel
+                        label_indices = list(range(0, self.num_channels, 5))
+                    else:
+                        # For fewer channels, show all labels
+                        label_indices = list(range(self.num_channels))
+                    
+                    # Add text items for labels on right side
+                    for i in label_indices:
+                        if i < data.shape[0]:
+                            label = pg.TextItem(
+                                text=self.channel_labels[i],
+                                color='white',
+                                anchor=(0, 0.5)  # Center vertically, left-aligned horizontally
+                            )
+                            label.isChannelLabel = True  # Custom attribute to identify these items
+                            label.setPos(end_time, self.channel_offsets[i])
+                            self.plot_widget.addItem(label)
                 
                 # Update title with current info and scaling mode
                 title = "EEG Signal Monitor"
@@ -478,8 +558,7 @@ class BDFSignalMonitor:
                 
                 self.plot_widget.setTitle(title, color='white', size='14pt')
                 
-                # Make grid more visible on dark background
-                self.plot_widget.showGrid(x=True, y=True, alpha=0.5)
+                # Grid lines are added explicitly as InfiniteLines
                 
         except Exception as e:
             print(f"Error updating plot: {e}")
@@ -533,6 +612,21 @@ class BDFSignalMonitor:
         self.plot_widget.clear()
         self.plots = []
         
+        # Set fixed tick spacing from -10 to 0 seconds
+        x_ticks = []
+        for i in range(-self.window_length, 1):
+            # For initial display, map the display time directly
+            x_ticks.append((duration + i - self.window_length, str(i)))
+        
+        # Add explicit vertical grid lines at each second mark first
+        for i in range(-self.window_length, 1):
+            grid_line = pg.InfiniteLine(
+                pos=duration + i - self.window_length,
+                angle=90,
+                pen=pg.mkPen(color='#606060', width=1)
+            )
+            self.plot_widget.addItem(grid_line)
+        
         # Create placeholder sine waves with different frequencies for each channel
         for i in range(self.num_channels):
             # Different frequency for each channel
@@ -547,17 +641,8 @@ class BDFSignalMonitor:
                 name=self.channel_labels[i]
             )
             self.plots.append(plot)
-            
+        
         # Add channel labels as text items on the right side
-        # First clear any existing label items
-        for item in self.plot_widget.getPlotItem().items:
-            if hasattr(item, 'isChannelLabel') and item.isChannelLabel:
-                self.plot_widget.getPlotItem().removeItem(item)
-        
-        # Calculate right edge position - use the end of the time scale
-        right_edge = duration
-        
-        # Determine which channels to show labels for
         label_indices = []
         if self.num_channels > 30:
             # For many channels, only label every 5th channel
@@ -567,6 +652,7 @@ class BDFSignalMonitor:
             label_indices = list(range(self.num_channels))
             
         # Add text items for labels on right side
+        right_edge = duration
         for i in label_indices:
             label = pg.TextItem(
                 text=self.channel_labels[i],
@@ -576,16 +662,13 @@ class BDFSignalMonitor:
             label.isChannelLabel = True  # Custom attribute to identify these items
             label.setPos(right_edge, self.channel_offsets[i])
             self.plot_widget.addItem(label)
-        
-        # Set time axis range
-        self.plot_widget.setXRange(0, duration)
-        
-        # Set tick spacing to 1 second
-        x_ticks = []
-        for i in range(int(duration) + 1):
-            x_ticks.append((i, str(i)))
-        
+            
+        # Configure bottom axis with ticks but no border
         self.plot_widget.getAxis('bottom').setTicks([x_ticks])
+        self.plot_widget.getAxis('bottom').setPen(pg.mkPen(None))  # Invisible axis line
+        
+        # Update the bottom axis label
+        self.plot_widget.setLabel('bottom', 'Time (seconds ago)', color='white')
         
         # Update title
         if self.current_bdf_file:
@@ -594,7 +677,8 @@ class BDFSignalMonitor:
             title = "BDF Signal Monitor - Waiting for data"
             
         self.plot_widget.setTitle(title, color='white', size='14pt')
-        self.plot_widget.showGrid(x=True, y=True, alpha=0.5)
+        # Set time axis range with fixed -10 to 0 display
+        self.plot_widget.setXRange(duration - self.window_length, duration)
 
 
 # For testing

@@ -23,6 +23,9 @@ import winsound  # For playing bell sound
 import electrode_monitor
 import signal_detect
 
+# Import BDF signal monitor
+from bdf_signal_monitor import BDFSignalMonitor
+
 # Try to import MNE-related packages with error handling
 try:
     import mne
@@ -250,6 +253,10 @@ class ACErecorder:
         self.connection_status = {}
         self.monitor_electrodes = tk.BooleanVar(value=self.settings.get("monitor_electrodes", True))
         
+        # BDF signal monitor properties
+        self.bdf_signal_monitor = None
+        self.monitor_bdf_signal = tk.BooleanVar(value=self.settings.get("monitor_bdf_signal", True))
+        
         # Ensure EEG files directory exists
         if getattr(sys, 'frozen', False):
             # Running as compiled executable
@@ -382,7 +389,7 @@ class ACErecorder:
             
             bell_toggle = ttk.Checkbutton(
                 bell_frame,
-                text="🔔",
+                text="",
                 variable=self.bell_states[i],
                 style='Bell.TCheckbutton'
             )
@@ -488,15 +495,70 @@ class ACErecorder:
         # Tools menu
         tools_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Tools", menu=tools_menu)
-        tools_menu.add_checkbutton(label="Monitor Electrodes During Recording", 
+        tools_menu.add_checkbutton(label="Monitor Electrodes", 
                                   variable=self.monitor_electrodes, 
                                   command=self.update_electrode_monitoring_setting)
+        tools_menu.add_checkbutton(label="BDF Signal Monitor", 
+                                  variable=self.monitor_bdf_signal,
+                                  command=self.update_bdf_signal_monitoring_setting)
         
         # Help menu
         help_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Help", menu=help_menu)
         help_menu.add_command(label="About", command=self.show_about)
         
+    def update_electrode_monitoring_setting(self):
+        """Save electrode monitoring preference to settings"""
+        self.settings["monitor_electrodes"] = self.monitor_electrodes.get()
+        self.save_settings()
+        
+    def update_bdf_signal_monitoring_setting(self):
+        """Save BDF signal monitoring preference to settings"""
+        self.settings["monitor_bdf_signal"] = self.monitor_bdf_signal.get()
+        self.save_settings()
+        
+    def initialize_electrode_monitor(self):
+        """Initialize the electrode monitor window"""
+        # Close any existing window to prevent duplicates
+        if self.electrode_monitor_window is not None:
+            try:
+                self.close_electrode_monitor()
+            except:
+                pass
+            
+        # Create a new electrode monitor window
+        try:
+            # Explicitly ensure matplotlib is in non-interactive mode
+            import matplotlib
+            matplotlib.use('TkAgg')
+            import matplotlib.pyplot as plt
+            plt.ioff()
+            
+            # Create the window
+            self.electrode_monitor_window = electrode_monitor.ElectrodeMonitorWindow(
+                master=self.root,
+                title="EEG Electrode Status Monitor"
+            )
+            
+            # Make sure it's visible
+            self.electrode_monitor_window.root.attributes("-topmost", True)
+            self.electrode_monitor_window.root.deiconify()
+            self.electrode_monitor_window.root.update()
+            
+            print("Successfully created electrode monitor window")
+            
+            # Start the electrode check timer
+            if self.electrode_check_timer is not None:
+                self.root.after_cancel(self.electrode_check_timer)
+                
+            self.electrode_check_timer = self.root.after(
+                self.electrode_check_interval, 
+                self.check_electrode_connections
+            )
+        except Exception as e:
+            print(f"Error initializing electrode monitor: {e}")
+            import traceback
+            traceback.print_exc()
     
     def check_electrode_connections_from_buffer(self, buffer, channel_names):
         """Check electrode connections using the buffer that was just written to BDF
@@ -633,73 +695,42 @@ class ACErecorder:
             except Exception as e:
                 print(f"Error closing matplotlib figures: {e}")
 
-    def update_electrode_monitoring_setting(self):
-        """Save electrode monitoring preference to settings"""
-        self.settings["monitor_electrodes"] = self.monitor_electrodes.get()
-        self.save_settings()
-
-    def update_bdf_monitoring_setting(self):
-        """Save BDF monitoring preference to settings"""
-        self.settings["enable_bdf_monitoring"] = self.enable_bdf_monitoring.get()
-        self.save_settings()
-        
-    def initialize_electrode_monitor(self):
-        """Initialize the electrode monitor window"""
+    def initialize_bdf_signal_monitor(self):
+        """Initialize the BDF signal monitor window"""
         # Close any existing window to prevent duplicates
-        if self.electrode_monitor_window is not None:
+        if self.bdf_signal_monitor is not None:
             try:
-                self.close_electrode_monitor()
+                self.close_bdf_signal_monitor()
             except:
                 pass
-            
-        # Create a new electrode monitor window
-        try:
-            # Explicitly ensure matplotlib is in non-interactive mode
-            import matplotlib
-            matplotlib.use('TkAgg')
-            import matplotlib.pyplot as plt
-            plt.ioff()
-            
-            # Get the EEG files directory for BDF mode
-            # Create it if it doesn't exist
-            eeg_files_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "EEG files")
-            if not os.path.exists(eeg_files_dir):
-                try:
-                    os.makedirs(eeg_files_dir)
-                    print(f"Created EEG files directory: {eeg_files_dir}")
-                except Exception as e:
-                    print(f"Failed to create EEG files directory: {e}")
-            
-            # Load the BDF monitoring preference from settings
-            enable_bdf_mode = self.settings.get("enable_bdf_monitoring", False)
-            
-            # Create the window with BDF monitoring enabled
-            self.electrode_monitor_window = electrode_monitor.ElectrodeMonitorWindow(
-                master=self.root,
-                title="EEG Electrode Status Monitor",
-                enable_bdf_mode=enable_bdf_mode,
-                recording_dir=eeg_files_dir
-            )
-            
-            # Make sure it's visible
-            self.electrode_monitor_window.root.attributes("-topmost", True)
-            self.electrode_monitor_window.root.deiconify()
-            self.electrode_monitor_window.root.update()
-            
-            print("Successfully created electrode monitor window")
-            
-            # Start the electrode check timer
-            if self.electrode_check_timer is not None:
-                self.root.after_cancel(self.electrode_check_timer)
                 
-            self.electrode_check_timer = self.root.after(
-                self.electrode_check_interval, 
-                self.check_electrode_connections
-            )    
+        # Create a new BDF signal monitor
+        try:
+            # Create the monitor instance
+            self.bdf_signal_monitor = BDFSignalMonitor(parent=self.root)
             
+            # Start monitoring the BDF file
+            self.bdf_signal_monitor.start_monitoring(self.output_file)
+            
+            print("Successfully created BDF signal monitor window")
         except Exception as e:
-            print(f"Error initializing electrode monitor: {e}")
+            print(f"Error initializing BDF signal monitor: {e}")
+            import traceback
             traceback.print_exc()
+    
+    def close_bdf_signal_monitor(self):
+        """Close the BDF signal monitor window"""
+        if self.bdf_signal_monitor is not None:
+            try:
+                # Stop monitoring
+                self.bdf_signal_monitor.stop_monitoring()
+                
+                # Close the window
+                self.bdf_signal_monitor.close_monitor()
+            except Exception as e:
+                print(f"Error closing BDF signal monitor: {e}")
+                
+            self.bdf_signal_monitor = None
 
     def update_com_ports(self):
         """Update the list of available COM ports"""
@@ -873,6 +904,24 @@ class ACErecorder:
                     print("Electrode monitoring started")
                 except Exception as e:
                     print(f"Error initializing electrode monitor: {e}")
+                    traceback.print_exc()
+            
+            # Initialize BDF signal monitor if enabled
+            if self.monitor_bdf_signal.get():
+                try:
+                    self.initialize_bdf_signal_monitor()
+                    print("BDF signal monitor started")
+                except Exception as e:
+                    print(f"Error initializing BDF signal monitor: {e}")
+                    traceback.print_exc()
+            
+            # Initialize BDF signal monitor if enabled
+            if self.monitor_bdf_signal.get():
+                try:
+                    self.initialize_bdf_signal_monitor()
+                    print("BDF signal monitor started")
+                except Exception as e:
+                    print(f"Error initializing BDF signal monitor: {e}")
                     traceback.print_exc()
             
         except Exception as e:
@@ -1132,6 +1181,9 @@ class ACErecorder:
             
         # Close electrode monitoring if it's active
         self.close_electrode_monitor()
+        
+        # Close BDF signal monitor if it's active
+        self.close_bdf_signal_monitor()
             
         # Calculate end time for annotations (1 second before end of recording)
         annotation_end_time = (self.total_samples_written + self.current_buffer_samples - self.sample_rate) / self.sample_rate

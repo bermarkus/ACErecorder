@@ -90,16 +90,30 @@ class BDFSignalMonitor:
                 print(f"Using default DPI: {screen_dpi}")
                 
             # Calculate true pixel size in points (1/72 inch) for matplotlib
-            true_pixel_size = 72.0 / screen_dpi
+            # Use half of the actual pixel size to ensure single-pixel lines
+            true_pixel_size = 72.0 / screen_dpi / 4.0
             print(f"True pixel size for linewidth: {true_pixel_size}")
+            
+            # Set up matplotlib for crisp lines - using more compatible settings
+            import matplotlib
+            # Don't force Agg renderer, as it might be causing issues
+            
+            # Simple anti-aliasing settings that won't break rendering
+            matplotlib.rcParams['lines.antialiased'] = False
+            matplotlib.rcParams['path.simplify'] = True
                 
             # Adjust figure size to match screen dimensions (in inches)
             fig_width = screen_width / screen_dpi
             fig_height = screen_height / screen_dpi
             
             # Set dark gray background for the figure with specified DPI
+            # Use a higher DPI than the screen for better line rendering
+            render_dpi = screen_dpi * 2
             self.figure, self.axes = plt.subplots(figsize=(fig_width, fig_height), 
-                                                  facecolor='#404040', dpi=screen_dpi)
+                                                  facecolor='#404040', dpi=render_dpi)
+            # Use standard plotting with optimized settings
+            plt.rcParams['path.simplify_threshold'] = 1.0
+            # Don't use extremely aggressive settings that might break rendering
             self.axes.set_facecolor('#404040')
             
             # Store the true pixel size for line drawing
@@ -404,12 +418,12 @@ class BDFSignalMonitor:
                     line, = self.axes.plot(
                         times, 
                         scaled_data + self.channel_offsets[i],
-                        linewidth=self.true_pixel_size,  # Exact single-pixel line
+                        linewidth=0.5,          # Thin line but not too thin to break rendering
                         color='#ffff00',       # Yellow color as requested
                         antialiased=False,     # Disable anti-aliasing
                         solid_capstyle='butt', # No line caps
                         solid_joinstyle='miter', # Sharp corners
-                        snap=True              # Snap to pixel grid
+                        snap=True             # Snap to pixel grid
                     )
                     self.lines.append(line)
                 
@@ -545,12 +559,12 @@ class BDFSignalMonitor:
             line, = self.axes.plot(
                 times, 
                 data[i] + self.channel_offsets[i],
-                linewidth=self.true_pixel_size,  # Exact single-pixel line
+                linewidth=0.5,           # Thin line but not too thin to break rendering
                 color='#ffff00',        # Yellow color as requested
                 antialiased=False,      # Disable anti-aliasing
                 solid_capstyle='butt',  # No line caps
                 solid_joinstyle='miter',# Sharp corners
-                snap=True               # Snap to pixel grid
+                snap=True              # Snap to pixel grid
             )
             self.lines.append(line)
             

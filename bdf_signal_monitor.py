@@ -41,13 +41,14 @@ class BDFSignalMonitor:
         self.app = QtWidgets.QApplication.instance()
         if not self.app:
             self.app = QtWidgets.QApplication([])
-        
+
     def create_window(self):
         """Create the signal monitor window if it doesn't exist"""
         if self.window is None:
             # Create main window
             self.window = QtWidgets.QMainWindow()
             self.window.setWindowTitle("BDF Signal Monitor")
+            self.window.setGeometry(100, 100, 1200, 800)  # Default size
             
             # Set window to stay on top
             self.window.setWindowFlags(
@@ -89,9 +90,14 @@ class BDFSignalMonitor:
             # Add plot widget to main layout
             main_layout.addWidget(self.plot_widget)
             
-            # Configure appearance
+            # Configure appearance - no left axis for channel labels
             self.plot_widget.setLabel('bottom', 'Time', 'seconds', color='white')
-            self.plot_widget.setLabel('left', 'Channel', color='white')
+            self.plot_widget.getAxis('left').setStyle(showValues=False)  # Hide values on left axis
+            
+            # Set plot to take up full width by removing margins
+            self.plot_widget.getPlotItem().getViewBox().setDefaultPadding(0)  # Remove padding
+            self.plot_widget.setContentsMargins(0, 0, 0, 0)  # Remove content margins
+            self.plot_widget.getPlotItem().setContentsMargins(0, 0, 0, 0)  # Remove plot margins
             
             # Initial title
             self.plot_widget.setTitle("EEG Signal Monitor (Last 10 seconds)", color='white', size='14pt')
@@ -102,6 +108,13 @@ class BDFSignalMonitor:
             self.plot_widget.getAxis('left').setPen(axis_pen)
             self.plot_widget.getAxis('bottom').setTextPen('white')
             self.plot_widget.getAxis('left').setTextPen('white')
+            
+            # Hide the left axis line
+            self.plot_widget.getAxis('left').setStyle(tickLength=0)
+            
+            # Remove padding and margins to make the plot fill the entire space
+            self.plot_widget.plotItem.vb.border = pg.mkPen(None)  # No border
+            self.plot_widget.getPlotItem().getViewBox().setDefaultPadding(0)
             
             # Handle close event - redirect to minimize
             self.window.closeEvent = self.handle_close_event
@@ -114,7 +127,7 @@ class BDFSignalMonitor:
             self.window.show()
             self.window.raise_()
             print("BDF Signal Monitor window created and displayed")
-    
+            
     def handle_close_event(self, event):
         """Handle window close event - redirect to minimize"""
         self.minimize_window()
@@ -257,7 +270,7 @@ class BDFSignalMonitor:
                             if self.num_channels == 0:
                                 self.num_channels = len(raw.ch_names)
                                 self.channel_labels = raw.ch_names
-                                self.channel_offsets = np.arange(self.num_channels) * self.y_scale * 2
+                                self.channel_offsets = np.arange(self.num_channels) * 2.0
                             
                             # Print some debug info about the data
                             data_min = np.min(data)
@@ -401,18 +414,35 @@ class BDFSignalMonitor:
                     )
                     self.plots.append(plot)
                 
-                # Add channel labels on the y-axis
-                y_ticks = []
+                # Add channel labels as text items on the right side
+                # First clear any existing label items
+                for item in self.plot_widget.getPlotItem().items:
+                    if hasattr(item, 'isChannelLabel') and item.isChannelLabel:
+                        self.plot_widget.getPlotItem().removeItem(item)
+                
+                # Calculate right edge position
+                right_edge = times[-1]
+                
+                # Determine which channels to show labels for
+                label_indices = []
                 if self.num_channels > 30:
                     # For many channels, only label every 5th channel
-                    for i in range(0, self.num_channels, 5):
-                        y_ticks.append((self.channel_offsets[i], self.channel_labels[i]))
+                    label_indices = list(range(0, self.num_channels, 5))
                 else:
                     # For fewer channels, show all labels
-                    for i in range(self.num_channels):
-                        y_ticks.append((self.channel_offsets[i], self.channel_labels[i]))
+                    label_indices = list(range(self.num_channels))
                 
-                self.plot_widget.getAxis('left').setTicks([y_ticks])
+                # Add text items for labels on right side
+                for i in label_indices:
+                    if i < data.shape[0]:
+                        label = pg.TextItem(
+                            text=self.channel_labels[i],
+                            color='white',
+                            anchor=(0, 0.5)  # Center vertically, left-aligned horizontally
+                        )
+                        label.isChannelLabel = True  # Custom attribute to identify these items
+                        label.setPos(right_edge, self.channel_offsets[i])
+                        self.plot_widget.addItem(label)
                 
                 # Set time axis to show last window_length seconds
                 if len(times) > 0:
@@ -518,18 +548,34 @@ class BDFSignalMonitor:
             )
             self.plots.append(plot)
             
-        # Add channel labels on the y-axis
-        y_ticks = []
+        # Add channel labels as text items on the right side
+        # First clear any existing label items
+        for item in self.plot_widget.getPlotItem().items:
+            if hasattr(item, 'isChannelLabel') and item.isChannelLabel:
+                self.plot_widget.getPlotItem().removeItem(item)
+        
+        # Calculate right edge position - use the end of the time scale
+        right_edge = duration
+        
+        # Determine which channels to show labels for
+        label_indices = []
         if self.num_channels > 30:
             # For many channels, only label every 5th channel
-            for i in range(0, self.num_channels, 5):
-                y_ticks.append((self.channel_offsets[i], self.channel_labels[i]))
+            label_indices = list(range(0, self.num_channels, 5))
         else:
             # For fewer channels, show all labels
-            for i in range(self.num_channels):
-                y_ticks.append((self.channel_offsets[i], self.channel_labels[i]))
-        
-        self.plot_widget.getAxis('left').setTicks([y_ticks])
+            label_indices = list(range(self.num_channels))
+            
+        # Add text items for labels on right side
+        for i in label_indices:
+            label = pg.TextItem(
+                text=self.channel_labels[i],
+                color='white',
+                anchor=(0, 0.5)  # Center vertically, left-aligned horizontally
+            )
+            label.isChannelLabel = True  # Custom attribute to identify these items
+            label.setPos(right_edge, self.channel_offsets[i])
+            self.plot_widget.addItem(label)
         
         # Set time axis range
         self.plot_widget.setXRange(0, duration)
@@ -549,6 +595,7 @@ class BDFSignalMonitor:
             
         self.plot_widget.setTitle(title, color='white', size='14pt')
         self.plot_widget.showGrid(x=True, y=True, alpha=0.5)
+
 
 # For testing
 if __name__ == "__main__":

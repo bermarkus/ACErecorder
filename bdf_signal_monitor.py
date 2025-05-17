@@ -105,8 +105,14 @@ class BDFSignalMonitor:
             # Store the true pixel size for line drawing
             self.true_pixel_size = true_pixel_size
             
-            # Remove all margins and padding
-            self.figure.subplots_adjust(left=0.02, right=0.98, top=0.95, bottom=0.02, hspace=0, wspace=0)
+            # Remove ALL margins and padding completely
+            self.figure.subplots_adjust(left=0, right=1, top=0.98, bottom=0, hspace=0, wspace=0)
+            
+            # Remove the axis frame entirely
+            self.axes.spines['left'].set_visible(False)
+            self.axes.spines['right'].set_visible(False)
+            self.axes.spines['top'].set_visible(False)
+            self.axes.spines['bottom'].set_visible(False)
             self.canvas = FigureCanvasTkAgg(self.figure, master=self.window)
             self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
             
@@ -421,20 +427,30 @@ class BDFSignalMonitor:
                     self.axes.set_yticks(y_ticks)
                     self.axes.set_yticklabels(self.channel_labels, color='white')
                 
-                # Set time axis to show last window_length seconds
+                # Set time axis to show EXACTLY last window_length seconds with no padding
                 if len(times) > 0:
-                    self.axes.set_xlim([max(0, times[-1] - self.window_length), times[-1]])
+                    # Calculate precise start and end times
+                    end_time = times[-1]
+                    start_time = end_time - self.window_length
                     
-                    # Set vertical grid lines at every second
-                    start_time = int(max(0, times[-1] - self.window_length))
-                    end_time = int(times[-1]) + 1
-                    self.axes.set_xticks(range(start_time, end_time))
+                    # Set exact limits with no padding whatsoever
+                    self.axes.set_xlim([start_time, end_time])
+                    
+                    # Set vertical grid lines at every second with exact positioning
+                    tick_start = int(np.ceil(start_time))
+                    tick_end = int(np.floor(end_time))
+                    if tick_end - tick_start < self.window_length - 1:
+                        tick_end = tick_start + int(self.window_length) - 1
+                    self.axes.set_xticks(range(tick_start, tick_end + 1))
                     
                     # Ensure grid shows up properly with the dark background
                     self.axes.grid(True, which='major', axis='x', linestyle='-', color='#808080', alpha=0.8)
                     
                 # Expand plot to fill all available space
-                self.figure.tight_layout(pad=0.1)
+                self.figure.tight_layout(pad=0)
+                
+                # Ensure axis spans the full figure
+                self.axes.set_position([0, 0, 1, 1])
                 
                 # Add title with current info and scaling mode
                 title = "EEG Signal Monitor"

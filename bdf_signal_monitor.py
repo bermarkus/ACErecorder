@@ -74,10 +74,36 @@ class BDFSignalMonitor:
             exit_fullscreen_btn.pack(side=tk.LEFT, padx=5)
             
             # Create figure and canvas for plotting - use the full screen dimensions
+            # Get the screen DPI to correctly calculate single-pixel lines
+            import ctypes
+            user32 = ctypes.windll.user32
+            try:
+                # Get the actual screen DPI (Windows specific)
+                LOGPIXELSX = 88
+                dc = user32.GetDC(0)
+                screen_dpi = ctypes.windll.gdi32.GetDeviceCaps(dc, LOGPIXELSX)
+                user32.ReleaseDC(0, dc)
+                print(f"Screen DPI detected: {screen_dpi}")
+            except:
+                # Fall back to a standard DPI if detection fails
+                screen_dpi = 96
+                print(f"Using default DPI: {screen_dpi}")
+                
+            # Calculate true pixel size in points (1/72 inch) for matplotlib
+            true_pixel_size = 72.0 / screen_dpi
+            print(f"True pixel size for linewidth: {true_pixel_size}")
+                
             # Adjust figure size to match screen dimensions (in inches)
-            fig_width = screen_width / 100  # Convert pixels to inches approximately
-            fig_height = screen_height / 100
-            self.figure, self.axes = plt.subplots(figsize=(fig_width, fig_height))
+            fig_width = screen_width / screen_dpi
+            fig_height = screen_height / screen_dpi
+            
+            # Set dark gray background for the figure with specified DPI
+            self.figure, self.axes = plt.subplots(figsize=(fig_width, fig_height), 
+                                                  facecolor='#404040', dpi=screen_dpi)
+            self.axes.set_facecolor('#404040')
+            
+            # Store the true pixel size for line drawing
+            self.true_pixel_size = true_pixel_size
             
             # Remove all margins and padding
             self.figure.subplots_adjust(left=0.02, right=0.98, top=0.95, bottom=0.02, hspace=0, wspace=0)
@@ -85,11 +111,22 @@ class BDFSignalMonitor:
             self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
             
             # Initial plot setup
-            self.axes.set_title("EEG Signal Monitor (Last 10 seconds)")
-            self.axes.set_xlabel("Time (seconds)")
-            self.axes.set_ylabel("Channel")
-            self.axes.grid(True)
+            self.axes.set_title("EEG Signal Monitor (Last 10 seconds)", color='white')
+            self.axes.set_xlabel("Time (seconds)", color='white')
+            self.axes.set_ylabel("Channel", color='white')
             
+            # Set grid with vertical lines every second
+            self.axes.grid(True, which='major', axis='x', linestyle='-', alpha=0.5)
+            self.axes.grid(True, which='major', axis='y', linestyle='-', alpha=0.3)
+            
+            # Set tick colors to white
+            self.axes.tick_params(axis='x', colors='white')
+            self.axes.tick_params(axis='y', colors='white')
+            
+            # Set spine colors to light gray
+            for spine in self.axes.spines.values():
+                spine.set_color('#808080')
+                
             # Ensure window is visible and on top
             self.window.lift()
             self.window.attributes('-topmost', True)
@@ -346,7 +383,7 @@ class BDFSignalMonitor:
                     # Print some debug about the channel scales
                     print(f"Channel scales - min: {min(self.channel_scales):.4f}, max: {max(self.channel_scales):.4f}")
                 
-                # Plot each channel with offset and unique color
+                # Plot all channels in yellow (ffff00) as requested
                 for i in range(min(self.num_channels, data.shape[0])):
                     # Apply individual channel scaling if enabled
                     if self.per_channel_scale:
@@ -356,12 +393,17 @@ class BDFSignalMonitor:
                         
                     # Center the signal around its offset
                     scaled_data = data[i] * channel_scale
-                    color_idx = i % 10  # Cycle through 10 colors
+                    
+                    # Use yellow color for all lines, exactly one pixel thick with no anti-aliasing
                     line, = self.axes.plot(
                         times, 
                         scaled_data + self.channel_offsets[i],
-                        linewidth=0.8,
-                        color=cm(color_idx)
+                        linewidth=self.true_pixel_size,  # Exact single-pixel line
+                        color='#ffff00',       # Yellow color as requested
+                        antialiased=False,     # Disable anti-aliasing
+                        solid_capstyle='butt', # No line caps
+                        solid_joinstyle='miter', # Sharp corners
+                        snap=True              # Snap to pixel grid
                     )
                     self.lines.append(line)
                 
@@ -372,17 +414,24 @@ class BDFSignalMonitor:
                     y_ticks = [self.channel_offsets[i] for i in shown_indices]
                     y_labels = [self.channel_labels[i] for i in shown_indices]
                     self.axes.set_yticks(y_ticks)
-                    self.axes.set_yticklabels(y_labels)
+                    self.axes.set_yticklabels(y_labels, color='white')
                 else:
                     # For fewer channels, show all labels
                     y_ticks = self.channel_offsets
                     self.axes.set_yticks(y_ticks)
-                    self.axes.set_yticklabels(self.channel_labels)
+                    self.axes.set_yticklabels(self.channel_labels, color='white')
                 
                 # Set time axis to show last window_length seconds
                 if len(times) > 0:
-                    # Use tight limits with no padding
                     self.axes.set_xlim([max(0, times[-1] - self.window_length), times[-1]])
+                    
+                    # Set vertical grid lines at every second
+                    start_time = int(max(0, times[-1] - self.window_length))
+                    end_time = int(times[-1]) + 1
+                    self.axes.set_xticks(range(start_time, end_time))
+                    
+                    # Ensure grid shows up properly with the dark background
+                    self.axes.grid(True, which='major', axis='x', linestyle='-', color='#808080', alpha=0.8)
                     
                 # Expand plot to fill all available space
                 self.figure.tight_layout(pad=0.1)
@@ -397,15 +446,22 @@ class BDFSignalMonitor:
                     title += " (Per-channel scaling)"
                 else:
                     title += " (Global scaling)"
+                    
+                self.axes.set_title(title, color='white', fontsize=14)
+                self.axes.set_xlabel("Time (seconds)", color='white')
                 
-                # Set title and label properties to be more visible in fullscreen
-                self.axes.set_title(title, fontsize=14, pad=2)
-                self.axes.set_xlabel("Time (seconds)", fontsize=12, labelpad=2)
+                # Make sure we have the correct background color in case it gets reset
+                self.axes.set_facecolor('#404040')
+                self.figure.patch.set_facecolor('#404040')
                 
-                # Enable grid but make it subtle
-                self.axes.grid(True, alpha=0.3)
+                # Configure the grid for better visibility on dark background
+                self.axes.grid(True, which='major', axis='x', linestyle='-', color='#808080', alpha=0.8)
+                self.axes.grid(True, which='major', axis='y', linestyle='-', color='#606060', alpha=0.4)
                 
-                # Draw the updated canvas
+                # Update tick colors to ensure they remain visible
+                self.axes.tick_params(axis='x', colors='white')
+                self.axes.tick_params(axis='y', colors='white')
+                
                 self.canvas.draw()
         
         except Exception as e:
@@ -473,8 +529,12 @@ class BDFSignalMonitor:
             line, = self.axes.plot(
                 times, 
                 data[i] + self.channel_offsets[i],
-                linewidth=0.8,
-                color=cm(color_idx)
+                linewidth=self.true_pixel_size,  # Exact single-pixel line
+                color='#ffff00',        # Yellow color as requested
+                antialiased=False,      # Disable anti-aliasing
+                solid_capstyle='butt',  # No line caps
+                solid_joinstyle='miter',# Sharp corners
+                snap=True               # Snap to pixel grid
             )
             self.lines.append(line)
             

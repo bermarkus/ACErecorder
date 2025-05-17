@@ -1,5 +1,7 @@
 {
-    "headset": "2 Channel Headset",
+    "headset": "19 Channel",
     "com_port": "",
-    "configurations": {}
+    "configurations": {},
+    "enable_bdf_monitoring": true,
+    "monitor_electrodes": true
 }

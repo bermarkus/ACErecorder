@@ -25,20 +25,15 @@ import fft_analysis
 
 class ElectrodeMonitorWindow:
     """A window that displays the status of EEG electrodes in a standard 10-20 system layout.
-    Shows electrodes in green when properly connected and red when disconnected.
+    Shows electrodes in green when properly connected and red when disconnected."""
     
-    Can analyze electrode connections from either streaming data or BDF files.
-    """
-    
-    def __init__(self, master=None, title="EEG Electrode Connection Monitor", enable_bdf_mode=False, recording_dir=None):
+    def __init__(self, master=None, title="EEG Electrode Connection Monitor"):
         """
         Initialize the electrode monitor window.
         
         Args:
             master: Parent tkinter window or None for standalone
             title: Window title
-            enable_bdf_mode: Whether to enable BDF file-based detection mode
-            recording_dir: Directory where BDF recordings are stored (required for BDF mode)
         """
         # Create a new window if no master provided
         if master is None:
@@ -160,39 +155,6 @@ class ElectrodeMonitorWindow:
             "50Hz": [],
             "60Hz": []
         }
-        
-        # Store BDF mode settings
-        self.enable_bdf_mode = enable_bdf_mode
-        self.recording_dir = recording_dir
-        self.bdf_check_timer = None
-        self.bdf_check_interval = 1000  # 1 second
-        
-        # Add BDF mode checkbox if enabled
-        if self.enable_bdf_mode:
-            # Add a separator between existing controls
-            ttk.Separator(self.controls_frame, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=10, pady=5)
-            
-            # Add BDF mode frame and controls
-            self.bdf_frame = ttk.Frame(self.controls_frame)
-            self.bdf_frame.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
-            
-            # BDF mode checkbox
-            self.use_bdf_var = tk.BooleanVar(value=False)
-            self.bdf_checkbox = ttk.Checkbutton(
-                self.bdf_frame,
-                text="Use BDF Files",
-                variable=self.use_bdf_var,
-                command=self._toggle_bdf_mode
-            )
-            self.bdf_checkbox.pack(side=tk.TOP, anchor=tk.W)
-            
-            # BDF mode status label
-            self.bdf_status_label = ttk.Label(
-                self.bdf_frame,
-                text="Streaming data mode",
-                font=("Arial", 9)
-            )
-            self.bdf_status_label.pack(side=tk.TOP, anchor=tk.W)
         
         # Initialize with all electrodes as unknown (gray)
         unknown_status = {electrode: None for electrode in self.positions.keys()}
@@ -346,97 +308,17 @@ class ElectrodeMonitorWindow:
             print("Canvas successfully recreated")
         except Exception as e:
             print(f"Critical error recreating canvas: {e}")
-    
+            
     def _update_threshold_label(self, *args):
         """Update the threshold label when the slider changes"""
         value = self.threshold_var.get()
         self.threshold_label.config(text=f"Line Noise Threshold: {value:.1f}")
         
-    def _toggle_bdf_mode(self):
-        """Toggle between streaming data and BDF file analysis modes"""
-        if not self.enable_bdf_mode:
-            return
-            
-        # Get the current state of the checkbox
-        using_bdf = self.use_bdf_var.get()
-        
-        if using_bdf:
-            # We're switching to BDF mode
-            self.bdf_status_label.config(text="BDF file mode (reading from files)")
-            
-            # Check if we have a valid recording directory
-            if not self.recording_dir or not os.path.isdir(self.recording_dir):
-                messagebox.showerror("Error", "Recording directory not specified or invalid.\nPlease set a valid recording directory.")
-                self.use_bdf_var.set(False)  # Revert checkbox
-                return
-                
-            # Start BDF checking timer
-            self._start_bdf_check_timer()
-        else:
-            # We're switching to streaming mode
-            self.bdf_status_label.config(text="Streaming data mode")
-            
-            # Cancel BDF checking timer if it exists
-            if self.bdf_check_timer is not None:
-                self.root.after_cancel(self.bdf_check_timer)
-                self.bdf_check_timer = None
-    
-    def _start_bdf_check_timer(self):
-        """Start the timer to periodically check BDF files for electrode connection status"""
-        if not self.enable_bdf_mode or not self.use_bdf_var.get():
-            return
-            
-        # Schedule the first check
-        self.bdf_check_timer = self.root.after(self.bdf_check_interval, self._check_bdf_connections)
-    
-    def _check_bdf_connections(self):
-        """Check electrode connections by reading from active BDF file"""
-        try:
-            # Make sure we're in BDF mode
-            if not self.enable_bdf_mode or not self.use_bdf_var.get():
-                return
-                
-            if not self.recording_dir or not os.path.isdir(self.recording_dir):
-                self.bdf_status_label.config(text="BDF mode: Invalid directory")
-                return
-                
-            # Check connections from active BDF file
-            # Using the currently selected headset type from the main app would be ideal,
-            # but for now we just use the default
-            connection_status = signal_detect.check_connections_from_active_bdf(
-                directory=self.recording_dir,
-                headset_type="19 Channel"  # Ideally should match the main app's setting
-            )
-            
-            # Update the electrode display with the results
-            if connection_status:
-                self.update_electrode_display(connection_status)
-                self.bdf_status_label.config(text="BDF mode: Updated from file")
-            else:
-                self.bdf_status_label.config(text="BDF mode: No active recording found")
-                
-            # Schedule the next check
-            self.bdf_check_timer = self.root.after(self.bdf_check_interval, self._check_bdf_connections)
-            
-        except Exception as e:
-            print(f"Error checking BDF connections: {e}")
-            import traceback
-            traceback.print_exc()
-            self.bdf_status_label.config(text=f"BDF mode: Error")
-            # Still schedule next check despite error
-            self.bdf_check_timer = self.root.after(self.bdf_check_interval, self._check_bdf_connections)
-    
     def _on_destroy(self, event):
-        """Handle cleanup when the window is destroyed"""
+        """Clean up matplotlib resources when window is destroyed"""
         # Only process if this is our window being destroyed
         if event.widget == self.root:
             print("Cleaning up electrode monitor resources...")
-            
-            # Cancel BDF checking timer if it exists
-            if self.bdf_check_timer is not None:
-                self.root.after_cancel(self.bdf_check_timer)
-                self.bdf_check_timer = None
-            
             try:
                 # Clear tracking dictionaries
                 self.electrode_points = {}

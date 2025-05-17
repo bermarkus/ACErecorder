@@ -3,7 +3,6 @@ signal_detect.py - Utilities for detecting poorly connected EEG sensors
 
 This module provides functions to detect disconnected or poorly connected EEG electrodes
 by analyzing the signal patterns and identifying flatlined channels with the value -187500.
-It can analyze data from both real-time streams and saved BDF files.
 """
 
 import numpy as np
@@ -12,8 +11,6 @@ import matplotlib.pyplot as plt
 from typing import List, Dict, Tuple, Union, Optional
 import os
 import json
-import pyedflib
-import time
 
 # Constants
 # Using a single disconnect threshold based on raw board values
@@ -351,178 +348,6 @@ def plot_connection_status(connection_status: Dict[str, bool],
     
     plt.tight_layout()
     plt.show()
-
-
-def find_active_bdf_file(directory: str) -> Optional[str]:
-    """
-    Find the most recently modified BDF file in the given directory, which is likely to be 
-    the currently recording file.
-    
-    Args:
-        directory: Directory to search for BDF files
-        
-    Returns:
-        Path to the most recent BDF file or None if no BDF files are found
-    """
-    try:
-        # Ensure the directory exists
-        if not os.path.isdir(directory):
-            print(f"Directory not found: {directory}")
-            return None
-            
-        # Find all BDF files in the directory
-        bdf_files = [os.path.join(directory, f) for f in os.listdir(directory) 
-                    if f.lower().endswith('.bdf')]
-        
-        if not bdf_files:
-            print(f"No BDF files found in {directory}")
-            return None
-            
-        # Find the most recently modified file
-        most_recent_file = max(bdf_files, key=os.path.getmtime)
-        most_recent_time = os.path.getmtime(most_recent_file)
-        current_time = time.time()
-        
-        # Check if the file was modified within the last minute (likely active recording)
-        if current_time - most_recent_time < 60:  # 60 seconds
-            print(f"Found active BDF file: {most_recent_file}")
-            return most_recent_file
-        else:
-            print(f"Most recent BDF file is not active (last modified {int(current_time - most_recent_time)} seconds ago)")
-            return None
-    
-    except Exception as e:
-        print(f"Error finding active BDF file: {e}")
-        return None
-
-
-def detect_disconnected_from_bdf(bdf_file: str, 
-                              window_size: int = 512,
-                              headset_type: str = "19 Channel") -> Dict[str, bool]:
-    """
-    Analyze electrode connection status by reading from a BDF file that may be actively recording.
-    This function is designed to work with BDF files while they're being written to.
-    
-    Args:
-        bdf_file: Path to the BDF file to analyze
-        window_size: Number of samples to read from the end of the file for analysis
-        headset_type: Type of headset/configuration used for recording
-        
-    Returns:
-        Dictionary mapping channel names to connection status (True=connected, False=disconnected)
-    """
-    try:
-        # Check if the file exists and is readable
-        if not os.path.exists(bdf_file):
-            print(f"BDF file not found: {bdf_file}")
-            return {}
-            
-        # Read data from the BDF file using pyedflib
-        try:
-            # Open the file in read mode
-            with pyedflib.EdfReader(bdf_file) as f:
-                # Get basic file info
-                n_channels = f.signals_in_file
-                sample_rate = f.getSampleFrequency(0)  # Assuming all channels have the same sample rate
-                
-                # Get the number of samples available (file might be being written to)
-                n_samples = f.getNSamples()[0]  # Assuming all channels have the same number of samples
-                
-                print(f"BDF file info: {n_channels} channels, {sample_rate} Hz, {n_samples} samples available")
-                
-                # Read channel labels
-                channel_names = [f.getSignalLabel(i) for i in range(n_channels)]
-                
-                # Calculate how many samples to read
-                # If window_size is larger than available samples, read all available
-                read_samples = min(window_size, n_samples)
-                
-                # Calculate the start sample - we want the most recent data
-                start_sample = max(0, n_samples - read_samples)
-                
-                # Read the data for each channel
-                data = np.zeros((n_channels, read_samples))
-                for i in range(n_channels):
-                    # Read the most recent chunk of data for this channel
-                    signal = f.readSignal(i, start_sample, read_samples)
-                    data[i, :] = signal
-                    
-                print(f"Read {read_samples} samples from sample {start_sample} onward")
-                
-        except Exception as e:
-            print(f"Error reading BDF file: {e}")
-            return {}
-            
-        # Get channel configuration based on headset type
-        if headset_type in CHANNEL_CONFIGS:
-            config = CHANNEL_CONFIGS[headset_type]
-            output_channels = config["output_order"]
-        else:
-            # If headset type not recognized, use the channel names from the file
-            output_channels = channel_names
-                
-        # Skip coherence channel if it exists (calculated, not recorded)
-        if "Coherence" in output_channels:
-            output_channels = [ch for ch in output_channels if ch != "Coherence"]
-                
-        # Verify that we have channel names that match what's in the file
-        if len(channel_names) != n_channels:
-            print(f"Warning: Number of channels in file ({n_channels}) doesn't match number of channel names ({len(channel_names)})")
-            # If channel names are missing, use default channel numbers
-            if len(channel_names) < n_channels:
-                channel_names.extend([f"Channel {i+1}" for i in range(len(channel_names), n_channels)])
-            # If we have too many names, truncate
-            channel_names = channel_names[:n_channels]
-                
-        # Now detect disconnected channels using the data we read
-        connection_status = check_real_time_connection(
-            data=data,
-            channel_names=channel_names,
-            window_size=read_samples
-        )
-            
-        return connection_status
-            
-    except Exception as e:
-        print(f"Error in detect_disconnected_from_bdf: {e}")
-        import traceback
-        traceback.print_exc()
-        return {}
-
-
-def check_connections_from_active_bdf(directory: str, headset_type: str = "19 Channel") -> Dict[str, bool]:
-    """
-    Find the active BDF recording and check electrode connections by reading from it.
-    This provides an alternative to real-time streaming for electrode connection monitoring.
-    
-    Args:
-        directory: Directory where BDF recordings are stored
-        headset_type: Type of headset/configuration used for recording
-        
-    Returns:
-        Dictionary mapping channel names to connection status (True=connected, False=disconnected)
-    """
-    try:
-        # Find the active recording file
-        bdf_file = find_active_bdf_file(directory)
-        if bdf_file is None:
-            print("No active BDF recording found")
-            return {}
-            
-        # Analyze the BDF file to detect electrode connections
-        connection_status = detect_disconnected_from_bdf(
-            bdf_file=bdf_file,
-            window_size=512,  # Analyze last 512 samples
-            headset_type=headset_type
-        )
-        
-        return connection_status
-        
-    except Exception as e:
-        print(f"Error checking connections from active BDF: {e}")
-        import traceback
-        traceback.print_exc()
-        return {}
 
 
 if __name__ == "__main__":

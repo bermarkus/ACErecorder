@@ -497,53 +497,6 @@ class ACErecorder:
         menubar.add_cascade(label="Help", menu=help_menu)
         help_menu.add_command(label="About", command=self.show_about)
         
-    def update_electrode_monitoring_setting(self):
-        """Save electrode monitoring preference to settings"""
-        self.settings["monitor_electrodes"] = self.monitor_electrodes.get()
-        self.save_settings()
-        
-    def initialize_electrode_monitor(self):
-        """Initialize the electrode monitor window"""
-        # Close any existing window to prevent duplicates
-        if self.electrode_monitor_window is not None:
-            try:
-                self.close_electrode_monitor()
-            except:
-                pass
-            
-        # Create a new electrode monitor window
-        try:
-            # Explicitly ensure matplotlib is in non-interactive mode
-            import matplotlib
-            matplotlib.use('TkAgg')
-            import matplotlib.pyplot as plt
-            plt.ioff()
-            
-            # Create the window
-            self.electrode_monitor_window = electrode_monitor.ElectrodeMonitorWindow(
-                master=self.root,
-                title="EEG Electrode Status Monitor"
-            )
-            
-            # Make sure it's visible
-            self.electrode_monitor_window.root.attributes("-topmost", True)
-            self.electrode_monitor_window.root.deiconify()
-            self.electrode_monitor_window.root.update()
-            
-            print("Successfully created electrode monitor window")
-            
-            # Start the electrode check timer
-            if self.electrode_check_timer is not None:
-                self.root.after_cancel(self.electrode_check_timer)
-                
-            self.electrode_check_timer = self.root.after(
-                self.electrode_check_interval, 
-                self.check_electrode_connections
-            )
-        except Exception as e:
-            print(f"Error initializing electrode monitor: {e}")
-            import traceback
-            traceback.print_exc()
     
     def check_electrode_connections_from_buffer(self, buffer, channel_names):
         """Check electrode connections using the buffer that was just written to BDF
@@ -679,6 +632,74 @@ class ACErecorder:
                 plt.close('all')
             except Exception as e:
                 print(f"Error closing matplotlib figures: {e}")
+
+    def update_electrode_monitoring_setting(self):
+        """Save electrode monitoring preference to settings"""
+        self.settings["monitor_electrodes"] = self.monitor_electrodes.get()
+        self.save_settings()
+
+    def update_bdf_monitoring_setting(self):
+        """Save BDF monitoring preference to settings"""
+        self.settings["enable_bdf_monitoring"] = self.enable_bdf_monitoring.get()
+        self.save_settings()
+        
+    def initialize_electrode_monitor(self):
+        """Initialize the electrode monitor window"""
+        # Close any existing window to prevent duplicates
+        if self.electrode_monitor_window is not None:
+            try:
+                self.close_electrode_monitor()
+            except:
+                pass
+            
+        # Create a new electrode monitor window
+        try:
+            # Explicitly ensure matplotlib is in non-interactive mode
+            import matplotlib
+            matplotlib.use('TkAgg')
+            import matplotlib.pyplot as plt
+            plt.ioff()
+            
+            # Get the EEG files directory for BDF mode
+            # Create it if it doesn't exist
+            eeg_files_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "EEG files")
+            if not os.path.exists(eeg_files_dir):
+                try:
+                    os.makedirs(eeg_files_dir)
+                    print(f"Created EEG files directory: {eeg_files_dir}")
+                except Exception as e:
+                    print(f"Failed to create EEG files directory: {e}")
+            
+            # Load the BDF monitoring preference from settings
+            enable_bdf_mode = self.settings.get("enable_bdf_monitoring", False)
+            
+            # Create the window with BDF monitoring enabled
+            self.electrode_monitor_window = electrode_monitor.ElectrodeMonitorWindow(
+                master=self.root,
+                title="EEG Electrode Status Monitor",
+                enable_bdf_mode=enable_bdf_mode,
+                recording_dir=eeg_files_dir
+            )
+            
+            # Make sure it's visible
+            self.electrode_monitor_window.root.attributes("-topmost", True)
+            self.electrode_monitor_window.root.deiconify()
+            self.electrode_monitor_window.root.update()
+            
+            print("Successfully created electrode monitor window")
+            
+            # Start the electrode check timer
+            if self.electrode_check_timer is not None:
+                self.root.after_cancel(self.electrode_check_timer)
+                
+            self.electrode_check_timer = self.root.after(
+                self.electrode_check_interval, 
+                self.check_electrode_connections
+            )    
+            
+        except Exception as e:
+            print(f"Error initializing electrode monitor: {e}")
+            traceback.print_exc()
 
     def update_com_ports(self):
         """Update the list of available COM ports"""

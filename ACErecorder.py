@@ -1039,8 +1039,18 @@ class ACErecorder:
                 
                 while self.recording or (stopping and buffer_count < self.sample_rate):
                     try:
-                        data = self.board.get_board_data()
-                        new_samples = data.shape[1]
+                        # Check if board is still available
+                        if self.board is None:
+                            print("Board is no longer available, stopping record loop")
+                            break
+                            
+                        # Get data from board
+                        try:
+                            data = self.board.get_board_data()
+                            new_samples = data.shape[1]
+                        except AttributeError:
+                            print("Board disconnected, stopping record loop")
+                            break
                         
                         # Update stopping state
                         if not self.recording and not stopping:
@@ -1252,7 +1262,7 @@ class ACErecorder:
                         self.countdown_labels[i].config(text="")
         
         self.recording = False
-        time.sleep(0.5)  # Give time for recording thread to finish
+        time.sleep(1.0)  # Give more time for recording thread to finish
         
         try:
             # Clean up board resources

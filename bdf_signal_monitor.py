@@ -8,6 +8,9 @@ import pyqtgraph as pg
 import mne
 from mne.io import read_raw_bdf
 
+# Import the signal processor
+from eeg_signal_processor import EEGSignalProcessor
+
 class BDFSignalMonitor:
     def __init__(self, parent=None):
         """Initialize the BDF signal monitor window"""
@@ -38,6 +41,11 @@ class BDFSignalMonitor:
         self.y_scale = 1.0  # Global scaling factor
         self.auto_scale = True  # Enable auto-scaling based on data
         self.per_channel_scale = True  # Scale each channel individually
+        
+        # Initialize signal processor
+        self.signal_processor = EEGSignalProcessor()
+        self.keyboard_shortcuts = {}
+        self.keyboard_shortcuts_enabled = True
         
         # Make sure the application exists - create new instance to isolate from Tkinter
         # Get existing instance but don't use it to avoid Tkinter interaction
@@ -146,6 +154,9 @@ class BDFSignalMonitor:
             # Handle close event - redirect to minimize
             self.window.closeEvent = self.handle_close_event
             
+            # Setup keyboard shortcuts
+            self.setup_keyboard_shortcuts()
+            
             # Use a completely separate window process approach
             # Initially hide the window
             self.window.hide()
@@ -175,6 +186,9 @@ class BDFSignalMonitor:
             # Process any pending events before showing
             self.app.processEvents()
             
+            # Setup keyboard event handlers
+            self.window.keyPressEvent = self.handle_key_press
+            
             # Show in maximized mode (not fullscreen)
             self.window.showMaximized()
             self.fullscreen_mode = False
@@ -194,6 +208,55 @@ class BDFSignalMonitor:
         else:
             self.window.showFullScreen()
             self.fullscreen_mode = True
+            
+    def setup_keyboard_shortcuts(self):
+        """Setup keyboard shortcuts for the signal monitor"""
+        # F1: Toggle bandpass filter
+        self.keyboard_shortcuts['F1'] = lambda: self.toggle_filter('bandpass')
+        
+    def handle_key_press(self, event):
+        """Handle keyboard shortcuts"""
+        if not self.keyboard_shortcuts_enabled:
+            return
+            
+        # Get the key that was pressed
+        key = event.key()
+        key_text = QtCore.Qt.Key(key).name
+        
+        # Check if this key has a shortcut assigned
+        if key_text in self.keyboard_shortcuts:
+            self.keyboard_shortcuts[key_text]()
+            return True
+            
+        # Pass the event to the parent handler if no shortcut was found
+        return super(QtWidgets.QMainWindow, self.window).keyPressEvent(event)
+        
+    def toggle_filter(self, filter_type):
+        """Toggle a specific filter"""
+        if filter_type == 'bandpass':
+            enabled = self.signal_processor.toggle_bandpass()
+            self.update_title()
+            print(f"Bandpass filter {'enabled' if enabled else 'disabled'}")
+            
+    def update_title(self):
+        """Update window title with current settings"""
+        title = "EEG Signal Monitor"
+        if self.current_bdf_file:
+            title += f" - {os.path.basename(self.current_bdf_file)}"
+        
+        # Add filter information
+        filter_info = []
+        if self.signal_processor.bandpass_enabled:
+            filter_info.append(f"BP: {self.signal_processor.bandpass_low}-{self.signal_processor.bandpass_high}Hz")
+        if self.signal_processor.notch_enabled:
+            filter_info.append(f"Notch: {self.signal_processor.notch_freq}Hz")
+        if self.signal_processor.reference_mode != 'original':
+            filter_info.append(f"Ref: {self.signal_processor.reference_mode}")
+            
+        if filter_info:
+            title += f" [{', '.join(filter_info)}]"
+            
+        self.window.setWindowTitle(title)
     
     def close_monitor(self):
         """Force close the monitor window"""
@@ -385,6 +448,10 @@ class BDFSignalMonitor:
                 try:
                     data, times, sfreq = self.data_queue.get_nowait()
                     print(f"Updating plot with data shape: {data.shape}, time points: {len(times)}")
+                    
+                    # Update signal processor sample rate
+                    self.signal_processor.set_sample_rate(sfreq)
+                    
                 except Exception as e:
                     print(f"Error getting data from queue: {e}")
                     return
@@ -392,6 +459,16 @@ class BDFSignalMonitor:
                 if data.shape[1] < 2:
                     print("Not enough data points to plot yet")
                     return
+                    
+                # Apply signal processing if enabled
+                if self.signal_processor.bandpass_enabled:
+                    try:
+                        # Apply bandpass filter
+                        print(f"Applying bandpass filter: {self.signal_processor.bandpass_low}-{self.signal_processor.bandpass_high} Hz")
+                        data = self.signal_processor.process(data, self.channel_labels)
+                        print(f"Filtered data shape: {data.shape}")
+                    except Exception as e:
+                        print(f"Error applying filter: {e}")
                 
                 # Clear previous plots
                 self.plot_widget.clear()

@@ -671,15 +671,22 @@ class BDFSignalMonitor:
                         label_indices = list(range(self.num_channels))
                     
                     # Add text items for labels on both left and right sides
-                    # Left side labels (at the beginning of the visible window)
-                    left_edge = start_time + (self.window_length * 0.05)  # 5% from left edge
+                    # Define label colors and styles - use same yellow as the signal lines
+                    label_color = '#ffff00'  # Yellow to match the signal lines
+                    background_color = (50, 50, 50, 200)  # Dark gray with opacity (R,G,B,A)
+                    
+                    # Position labels right at the edges of the display
+                    left_edge = start_time + 0.01  # Very close to left edge (1% of window)
+                    right_edge = end_time - 0.01  # Very close to right edge
+                    
                     for i in label_indices:
                         if i < data.shape[0]:
                             # Create left side label
                             left_label = pg.TextItem(
                                 text=self.channel_labels[i],
-                                color='white',
-                                anchor=(0.5, 0.5)  # Center both horizontally and vertically
+                                color=label_color,
+                                anchor=(0, 0.5),  # Left-aligned, vertically centered
+                                fill=background_color  # Add opaque background
                             )
                             left_label.isChannelLabel = True  # Custom attribute to identify these items
                             left_label.setPos(left_edge, self.channel_offsets[i])
@@ -688,11 +695,12 @@ class BDFSignalMonitor:
                             # Create right side label
                             right_label = pg.TextItem(
                                 text=self.channel_labels[i],
-                                color='white',
-                                anchor=(0, 0.5)  # Center vertically, left-aligned horizontally
+                                color=label_color,
+                                anchor=(1, 0.5),  # Right-aligned, vertically centered
+                                fill=background_color  # Add opaque background
                             )
                             right_label.isChannelLabel = True
-                            right_label.setPos(end_time, self.channel_offsets[i])
+                            right_label.setPos(right_edge, self.channel_offsets[i])
                             self.plot_widget.addItem(right_label)
                 
                 # Update title with current info and scaling mode
@@ -780,7 +788,7 @@ class BDFSignalMonitor:
             )
             self.plots.append(plot)
         
-        # Add channel labels as text items on the right side
+        # Add channel labels as text items on the left side
         label_indices = []
         if self.num_channels > 30:
             # For many channels, only label every 5th channel
@@ -789,16 +797,22 @@ class BDFSignalMonitor:
             # For fewer channels, show all labels
             label_indices = list(range(self.num_channels))
             
-        # Add text items for labels on right side
-        right_edge = duration
+        # Define label colors and styles - use same yellow as the signal lines
+        label_color = '#ffff00'  # Yellow to match the signal lines
+        background_color = (50, 50, 50, 200)  # Dark gray with opacity (R,G,B,A)
+        
+        # Position labels at the very left edge
+        left_edge = duration - self.window_length + 0.01  # Very close to left edge
+        
         for i in label_indices:
             label = pg.TextItem(
                 text=self.channel_labels[i],
-                color='white',
-                anchor=(0, 0.5)  # Center vertically, left-aligned horizontally
+                color=label_color,
+                anchor=(0, 0.5),  # Left-aligned, vertically centered
+                fill=background_color  # Add opaque background
             )
             label.isChannelLabel = True  # Custom attribute to identify these items
-            label.setPos(right_edge, self.channel_offsets[i])
+            label.setPos(left_edge, self.channel_offsets[i])
             self.plot_widget.addItem(label)
             
         # Configure bottom axis with ticks but no border

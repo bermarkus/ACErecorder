@@ -137,6 +137,18 @@ class EEGSignalProcessor:
         self.bandpass_low = float(low_freq)
         self.bandpass_high = float(high_freq)
         
+    def toggle_notch(self, enabled=None):
+        """Toggle or set notch filter state"""
+        if enabled is None:
+            self.notch_enabled = not self.notch_enabled
+        else:
+            self.notch_enabled = enabled
+        return self.notch_enabled
+        
+    def set_notch_freq(self, freq):
+        """Set notch filter frequency"""
+        self.notch_freq = float(freq)
+        
     def set_sample_rate(self, sample_rate):
         """Update the sample rate"""
         self.sample_rate = float(sample_rate)

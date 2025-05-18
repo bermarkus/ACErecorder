@@ -46,8 +46,6 @@ class BDFSignalMonitor:
         
         # Initialize signal processor
         self.signal_processor = EEGSignalProcessor()
-        self.keyboard_shortcuts = {}
-        self.keyboard_shortcuts_enabled = True
         
         # Create settings menu (initially hidden)
         self.settings_menu = None
@@ -174,14 +172,14 @@ class BDFSignalMonitor:
             self.plot_widget.setFrameStyle(QtWidgets.QFrame.NoFrame)
             self.plot_widget.viewport().setStyleSheet("border: 0px; padding: 0px; margin: 0px;")
             
-            # Add a settings button in the top-right corner
+            # Add a settings button in the top-left corner
             self.settings_button = QtWidgets.QPushButton("⚙", self.window)
             self.settings_button.setStyleSheet(
                 "QPushButton {background-color: rgba(60, 60, 60, 150); color: white; " +
-                "border: none; border-radius: 15px; font-size: 16px; padding: 5px;}" +
+                "border: none; border-radius: 30px; font-size: 32px; padding: 5px;}" +
                 "QPushButton:hover {background-color: rgba(80, 80, 80, 200);}"
             )
-            self.settings_button.setFixedSize(30, 30)
+            self.settings_button.setFixedSize(60, 60)  # 2x larger
             self.settings_button.setToolTip("Open Signal Processing Settings")
             self.settings_button.clicked.connect(self.toggle_settings_menu)
             
@@ -190,11 +188,6 @@ class BDFSignalMonitor:
             
             # Handle close event - redirect to minimize
             self.window.closeEvent = self.handle_close_event
-            
-            # Setup keyboard shortcuts
-            self.setup_keyboard_shortcuts()
-            
-            # Schedule initialization will happen in _show_window_safely
             
             # Use a completely separate window process approach
             # Initially hide the window
@@ -225,8 +218,7 @@ class BDFSignalMonitor:
             # Process any pending events before showing
             self.app.processEvents()
             
-            # Setup keyboard event handlers
-            self.window.keyPressEvent = self.handle_key_press
+            # Window init completed
             
             # Show in maximized mode (not fullscreen)
             self.window.showMaximized()
@@ -239,12 +231,12 @@ class BDFSignalMonitor:
             # Initialize the settings menu
             self.init_settings_menu()
             
-            # Position the settings button in the top-right corner
+            # Position the settings button in the top-left corner
             def position_button():
-                # Position in top-right with padding
-                padding = 10
+                # Position in top-left with padding
+                padding = 15
                 self.settings_button.move(
-                    self.window.width() - self.settings_button.width() - padding,
+                    padding,
                     padding
                 )
                 self.settings_button.show()
@@ -277,72 +269,19 @@ class BDFSignalMonitor:
         if self.settings_menu.isVisible():
             self.settings_menu.hide()
         else:
-            # Position near the button
+            # Position to the right of the button
             button_pos = self.settings_button.mapToGlobal(QtCore.QPoint(0, 0))
-            x = button_pos.x() - self.settings_menu.width() + self.settings_button.width()
-            y = button_pos.y() + self.settings_button.height() + 5
+            x = button_pos.x() + self.settings_button.width() + 5  # Position to the right
+            y = button_pos.y()  # Same vertical position as the button
             self.settings_menu.move(x, y)
             self.settings_menu.show()
             self.settings_menu.raise_()
         
-    def toggle_filter(self, filter_type):
-        """Toggle a specific filter using keyboard shortcut"""
-        if filter_type == 'bandpass':
-            # Toggle the filter in the processor
-            enabled = self.signal_processor.toggle_bandpass()
-            
-            # Update the menu if it exists
-            if self.settings_menu is not None:
-                self.settings_menu.bp_checkbox.setChecked(enabled)
-                
-            # Update the window title
-            self.update_title()
-            print(f"Bandpass filter {'enabled' if enabled else 'disabled'} via shortcut")
-            
-        elif filter_type == 'notch':
-            # Toggle the notch filter
-            if hasattr(self.signal_processor, 'toggle_notch'):
-                enabled = self.signal_processor.toggle_notch()
-                
-                # Update the menu if it exists
-                if self.settings_menu is not None:
-                    self.settings_menu.notch_checkbox.setChecked(enabled)
-                    
-                # Update the window title
-                self.update_title()
-                print(f"Notch filter {'enabled' if enabled else 'disabled'} via shortcut")
+
     
-    def toggle_fullscreen(self):
-        """Toggle fullscreen mode"""
-        if self.fullscreen_mode:
-            # Return to maximized mode (not normal size)
-            self.window.showMaximized()
-            self.fullscreen_mode = False
-        else:
-            self.window.showFullScreen()
-            self.fullscreen_mode = True
+
             
-    def setup_keyboard_shortcuts(self):
-        """Setup keyboard shortcuts for the signal monitor"""
-        # F1: Toggle bandpass filter
-        self.keyboard_shortcuts['F1'] = lambda: self.toggle_filter('bandpass')
-        
-    def handle_key_press(self, event):
-        """Handle keyboard shortcuts"""
-        if not self.keyboard_shortcuts_enabled:
-            return
-            
-        # Get the key that was pressed
-        key = event.key()
-        key_text = QtCore.Qt.Key(key).name
-        
-        # Check if this key has a shortcut assigned
-        if key_text in self.keyboard_shortcuts:
-            self.keyboard_shortcuts[key_text]()
-            return True
-            
-        # Pass the event to the parent handler if no shortcut was found
-        return super(QtWidgets.QMainWindow, self.window).keyPressEvent(event)
+
         
 
             

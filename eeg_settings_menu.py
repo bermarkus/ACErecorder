@@ -137,29 +137,7 @@ class EEGSettingsMenu(QtWidgets.QWidget):
         
         bp_layout.addLayout(freq_layout)
         
-        # Preset buttons for common bands
-        presets_layout = QtWidgets.QHBoxLayout()
-        presets_layout.addWidget(QtWidgets.QLabel("Presets:"))
-        
-        # Theta (4-8 Hz)
-        theta_btn = QtWidgets.QPushButton("Theta")
-        theta_btn.setToolTip("4-8 Hz")
-        theta_btn.clicked.connect(lambda: self.set_bandpass_preset(4, 8))
-        presets_layout.addWidget(theta_btn)
-        
-        # Alpha (8-13 Hz)
-        alpha_btn = QtWidgets.QPushButton("Alpha")
-        alpha_btn.setToolTip("8-13 Hz")
-        alpha_btn.clicked.connect(lambda: self.set_bandpass_preset(8, 13))
-        presets_layout.addWidget(alpha_btn)
-        
-        # Beta (13-30 Hz)
-        beta_btn = QtWidgets.QPushButton("Beta")
-        beta_btn.setToolTip("13-30 Hz")
-        beta_btn.clicked.connect(lambda: self.set_bandpass_preset(13, 30))
-        presets_layout.addWidget(beta_btn)
-        
-        bp_layout.addLayout(presets_layout)
+        # Note: Theta, Alpha, Beta presets have been removed
         main_layout.addWidget(bp_group)
         
         # Create notch filter group
@@ -202,16 +180,7 @@ class EEGSettingsMenu(QtWidgets.QWidget):
         notch_layout.addLayout(notch_freq_layout)
         main_layout.addWidget(notch_group)
         
-        # Add keyboard shortcut info
-        shortcuts_label = QtWidgets.QLabel(
-            "Keyboard Shortcuts:\n"
-            "F1: Toggle Bandpass Filter\n"
-            "F2: Toggle Notch Filter\n"
-            "F11: Toggle Fullscreen"
-        )
-        shortcuts_label.setStyleSheet("color: #BBBBBB; font-size: 10pt;")
-        shortcuts_label.setAlignment(Qt.AlignCenter)
-        main_layout.addWidget(shortcuts_label)
+        # Keyboard shortcuts have been removed
         
         # Add close button
         close_btn = QtWidgets.QPushButton("Close")

@@ -422,11 +422,15 @@ class BDFSignalMonitor:
                                 time.sleep(0.5)
                                 continue
                                 
-                            # If this is our first read, set up the channel information
-                            if self.num_channels == 0:
-                                self.num_channels = len(raw.ch_names)
-                                self.channel_labels = raw.ch_names
-                                self.channel_offsets = np.arange(self.num_channels) * 2.0
+                            # Always update channel information from the BDF file
+                            self.num_channels = len(raw.ch_names)
+                            self.channel_labels = raw.ch_names
+                            print(f"Channel labels from BDF: {self.channel_labels}")
+                            
+                            # Create channel offsets - REVERSED so first channel appears at the TOP
+                            base_offset = 2.0
+                            channel_spacing = base_offset * (2 if self.num_channels <= 30 else 1.5)
+                            self.channel_offsets = (self.num_channels - 1 - np.arange(self.num_channels)) * channel_spacing
                             
                             # Print some debug info about the data
                             data_min = np.min(data)
@@ -538,8 +542,9 @@ class BDFSignalMonitor:
                     channel_spacing = base_offset * 1.5
                 else:
                     channel_spacing = base_offset * 2
-                    
-                self.channel_offsets = np.arange(self.num_channels) * channel_spacing
+                
+                # IMPORTANT: Reverse the channel order so first channel is at top, last at bottom
+                self.channel_offsets = (self.num_channels - 1 - np.arange(self.num_channels)) * channel_spacing
                 print(f"Channel spacing: {channel_spacing}, Using y_scale: {self.y_scale:.8f}")
                 
                 # Update or initialize per-channel scaling factors
@@ -665,17 +670,30 @@ class BDFSignalMonitor:
                         # For fewer channels, show all labels
                         label_indices = list(range(self.num_channels))
                     
-                    # Add text items for labels on right side
+                    # Add text items for labels on both left and right sides
+                    # Left side labels (at the beginning of the visible window)
+                    left_edge = start_time + (self.window_length * 0.05)  # 5% from left edge
                     for i in label_indices:
                         if i < data.shape[0]:
-                            label = pg.TextItem(
+                            # Create left side label
+                            left_label = pg.TextItem(
+                                text=self.channel_labels[i],
+                                color='white',
+                                anchor=(0.5, 0.5)  # Center both horizontally and vertically
+                            )
+                            left_label.isChannelLabel = True  # Custom attribute to identify these items
+                            left_label.setPos(left_edge, self.channel_offsets[i])
+                            self.plot_widget.addItem(left_label)
+                            
+                            # Create right side label
+                            right_label = pg.TextItem(
                                 text=self.channel_labels[i],
                                 color='white',
                                 anchor=(0, 0.5)  # Center vertically, left-aligned horizontally
                             )
-                            label.isChannelLabel = True  # Custom attribute to identify these items
-                            label.setPos(end_time, self.channel_offsets[i])
-                            self.plot_widget.addItem(label)
+                            right_label.isChannelLabel = True
+                            right_label.setPos(end_time, self.channel_offsets[i])
+                            self.plot_widget.addItem(right_label)
                 
                 # Update title with current info and scaling mode
                 title = "EEG Signal Monitor"
@@ -706,11 +724,8 @@ class BDFSignalMonitor:
                 self.update_timer.setInterval(self.update_interval)
             
     def _setup_initial_display(self):
-        """Setup initial display with placeholder data"""
-        # Create some initial placeholder data
-        sample_rate = 250  # Typical EEG sample rate
+        """Setup initial display with empty grid"""
         duration = self.window_length  # 10 seconds
-        num_samples = int(sample_rate * duration)
         
         # Determine number of channels based on filename pattern or default to 23
         if self.current_bdf_file:
@@ -725,17 +740,14 @@ class BDFSignalMonitor:
         else:
             self.num_channels = 23
             
-        # Create channel labels if not already set
+        # Create empty channel labels if not already set
         if not self.channel_labels or len(self.channel_labels) != self.num_channels:
             self.channel_labels = [f"CH{i+1}" for i in range(self.num_channels)]
             
-        # Create channel offsets for display
+        # Create channel offsets - REVERSED so first channel is at the top
         base_offset = 2.0
         channel_spacing = base_offset * (2 if self.num_channels <= 30 else 1.5)
-        self.channel_offsets = np.arange(self.num_channels) * channel_spacing
-        
-        # Create time points
-        times = np.linspace(0, duration, num_samples)
+        self.channel_offsets = (self.num_channels - 1 - np.arange(self.num_channels)) * channel_spacing
         
         # Create yellow pen for all plots
         yellow_pen = pg.mkPen(color='#ffff00', width=1)
@@ -758,17 +770,11 @@ class BDFSignalMonitor:
                 pen=pg.mkPen(color='#606060', width=1)
             )
             self.plot_widget.addItem(grid_line)
-        
-        # Create placeholder sine waves with different frequencies for each channel
-        for i in range(self.num_channels):
-            # Different frequency for each channel
-            freq = 1 + (i % 10) * 0.5  # 1-5.5 Hz
-            signal_data = self.y_scale * 0.5 * np.sin(2 * np.pi * freq * times)
             
-            # Plot with yellow pen
+        # Create empty plots for each channel
+        for i in range(self.num_channels):
             plot = self.plot_widget.plot(
-                times, 
-                signal_data + self.channel_offsets[i],
+                [], [],  # Empty data initially
                 pen=yellow_pen,
                 name=self.channel_labels[i]
             )

@@ -9,8 +9,9 @@ import pyqtgraph as pg
 import mne
 from mne.io import read_raw_bdf
 
-# Import the signal processor
+# Import the signal processor and settings menu
 from eeg_signal_processor import EEGSignalProcessor
+from eeg_settings_menu import EEGSettingsMenu
 
 class BDFSignalMonitor:
     def __init__(self, parent=None):
@@ -47,6 +48,9 @@ class BDFSignalMonitor:
         self.signal_processor = EEGSignalProcessor()
         self.keyboard_shortcuts = {}
         self.keyboard_shortcuts_enabled = True
+        
+        # Create settings menu (initially hidden)
+        self.settings_menu = None
         
         # Make sure the application exists - create new instance to isolate from Tkinter
         # Get existing instance but don't use it to avoid Tkinter interaction
@@ -170,6 +174,20 @@ class BDFSignalMonitor:
             self.plot_widget.setFrameStyle(QtWidgets.QFrame.NoFrame)
             self.plot_widget.viewport().setStyleSheet("border: 0px; padding: 0px; margin: 0px;")
             
+            # Add a settings button in the top-right corner
+            self.settings_button = QtWidgets.QPushButton("⚙", self.window)
+            self.settings_button.setStyleSheet(
+                "QPushButton {background-color: rgba(60, 60, 60, 150); color: white; " +
+                "border: none; border-radius: 15px; font-size: 16px; padding: 5px;}" +
+                "QPushButton:hover {background-color: rgba(80, 80, 80, 200);}"
+            )
+            self.settings_button.setFixedSize(30, 30)
+            self.settings_button.setToolTip("Open Signal Processing Settings")
+            self.settings_button.clicked.connect(self.toggle_settings_menu)
+            
+            # Position will be set after window is shown
+            self.settings_button.hide()
+            
             # Handle close event - redirect to minimize
             self.window.closeEvent = self.handle_close_event
             
@@ -218,244 +236,81 @@ class BDFSignalMonitor:
             self.window.raise_()
             self.window.activateWindow()
             
-            # Setup UI elements after showing the window
-            QtCore.QTimer.singleShot(500, self.setup_settings_ui)
+            # Initialize the settings menu
+            self.init_settings_menu()
+            
+            # Position the settings button in the top-right corner
+            def position_button():
+                # Position in top-right with padding
+                padding = 10
+                self.settings_button.move(
+                    self.window.width() - self.settings_button.width() - padding,
+                    padding
+                )
+                self.settings_button.show()
+                self.settings_button.raise_()
+                
+            # Delay to ensure window is fully shown
+            QtCore.QTimer.singleShot(500, position_button)
             
             print("BDF Signal Monitor now displayed in maximized mode")
 
-    def setup_settings_ui(self):
-        """Setup the settings panel and icon after the window is shown"""
-        if not self.window:
-            return
-            
-        try:
-            # Create settings menu container (initially hidden)
-            self.settings_panel = self.create_settings_panel()
-            self.settings_panel.setVisible(False)
-            
-            # Add the settings panel to column 0
-            self.main_grid.addWidget(self.settings_panel, 0, 0, 1, 1)
-            
-            # Adjust grid column stretches (initially settings panel hidden)
-            self.main_grid.setColumnStretch(0, 0)  # Settings panel (0% when hidden)
-            self.main_grid.setColumnStretch(1, 1)  # Plot area (100% when settings hidden)
-            
-            # Create settings icon after a delay to ensure window is ready
-            QtCore.QTimer.singleShot(300, self.create_settings_button)
-            print("Settings panel successfully initialized")
-        except Exception as e:
-            print(f"Error setting up settings UI: {e}")
+    def init_settings_menu(self):
+        """Initialize the settings menu"""
+        if self.settings_menu is None:
+            try:
+                # Create the settings menu as a separate window
+                self.settings_menu = EEGSettingsMenu(self.signal_processor)
+                
+                # Connect signals
+                self.settings_menu.settingsChanged.connect(self.update_title)
+                
+                print("Settings menu initialized successfully")
+            except Exception as e:
+                print(f"Error initializing settings menu: {e}")
     
-    def create_settings_button(self):
-        """Create the settings button after a delay to ensure window is available"""
-        try:
-            self.settings_icon = self.create_settings_icon()
-            print("Settings button created successfully")
-        except Exception as e:
-            print(f"Error creating settings button: {e}")
+    def toggle_settings_menu(self):
+        """Toggle visibility of the settings menu"""
+        if self.settings_menu is None:
+            self.init_settings_menu()
             
-    def create_settings_panel(self):
-        """Create the settings panel with filter controls"""
-        # Create panel widget with dark background
-        panel = QtWidgets.QWidget()
-        panel.setStyleSheet(
-            "background-color: rgba(40, 40, 40, 210); " +
-            "color: white; " +
-            "border: 1px solid #555;"
-        )
-        panel.setMinimumWidth(300)  # Set minimum width to ensure readability
+        if self.settings_menu.isVisible():
+            self.settings_menu.hide()
+        else:
+            # Position near the button
+            button_pos = self.settings_button.mapToGlobal(QtCore.QPoint(0, 0))
+            x = button_pos.x() - self.settings_menu.width() + self.settings_button.width()
+            y = button_pos.y() + self.settings_button.height() + 5
+            self.settings_menu.move(x, y)
+            self.settings_menu.show()
+            self.settings_menu.raise_()
         
-        # Create layout for the panel
-        layout = QtWidgets.QVBoxLayout(panel)
-        
-        # Add header
-        header = QtWidgets.QLabel("Signal Processing")
-        header.setStyleSheet("font-size: 16px; font-weight: bold; color: white;")
-        header.setAlignment(Qt.AlignCenter)
-        layout.addWidget(header)
-        
-        # Add separator
-        line = QtWidgets.QFrame()
-        line.setFrameShape(QtWidgets.QFrame.HLine)
-        line.setFrameShadow(QtWidgets.QFrame.Sunken)
-        line.setStyleSheet("background-color: #555;")
-        layout.addWidget(line)
-        
-        # Create section for bandpass filter
-        bp_group = QtWidgets.QGroupBox("Bandpass Filter")
-        bp_group.setStyleSheet("color: white; background-color: rgba(50, 50, 50, 180);")
-        bp_layout = QtWidgets.QVBoxLayout(bp_group)
-        
-        # Bandpass toggle
-        self.bp_checkbox = QtWidgets.QCheckBox("Enable Bandpass Filter")
-        self.bp_checkbox.setChecked(self.signal_processor.bandpass_enabled)
-        self.bp_checkbox.toggled.connect(self.toggle_bandpass_filter)
-        bp_layout.addWidget(self.bp_checkbox)
-        
-        # Bandpass frequency range
-        freq_layout = QtWidgets.QHBoxLayout()
-        freq_layout.addWidget(QtWidgets.QLabel("Range:"))
-        
-        self.bp_low_input = QtWidgets.QDoubleSpinBox()
-        self.bp_low_input.setRange(0.1, 100)
-        self.bp_low_input.setValue(self.signal_processor.bandpass_low)
-        self.bp_low_input.setDecimals(1)
-        self.bp_low_input.setSuffix(" Hz")
-        self.bp_low_input.valueChanged.connect(self.update_bandpass_range)
-        freq_layout.addWidget(self.bp_low_input)
-        
-        freq_layout.addWidget(QtWidgets.QLabel("to"))
-        
-        self.bp_high_input = QtWidgets.QDoubleSpinBox()
-        self.bp_high_input.setRange(1, 200)
-        self.bp_high_input.setValue(self.signal_processor.bandpass_high)
-        self.bp_high_input.setDecimals(1)
-        self.bp_high_input.setSuffix(" Hz")
-        self.bp_high_input.valueChanged.connect(self.update_bandpass_range)
-        freq_layout.addWidget(self.bp_high_input)
-        
-        bp_layout.addLayout(freq_layout)
-        layout.addWidget(bp_group)
-        
-        # Create section for notch filter
-        notch_group = QtWidgets.QGroupBox("Notch Filter")
-        notch_group.setStyleSheet("color: white; background-color: rgba(50, 50, 50, 180);")
-        notch_layout = QtWidgets.QVBoxLayout(notch_group)
-        
-        # Notch toggle
-        self.notch_checkbox = QtWidgets.QCheckBox("Enable Notch Filter")
-        self.notch_checkbox.setChecked(self.signal_processor.notch_enabled)
-        self.notch_checkbox.toggled.connect(self.toggle_notch_filter)
-        notch_layout.addWidget(self.notch_checkbox)
-        
-        # Notch frequency selection
-        notch_freq_layout = QtWidgets.QHBoxLayout()
-        notch_freq_layout.addWidget(QtWidgets.QLabel("Frequency:"))
-        
-        self.notch_freq_input = QtWidgets.QDoubleSpinBox()
-        self.notch_freq_input.setRange(10, 200)
-        self.notch_freq_input.setValue(self.signal_processor.notch_freq)
-        self.notch_freq_input.setDecimals(1)
-        self.notch_freq_input.setSuffix(" Hz")
-        self.notch_freq_input.valueChanged.connect(self.update_notch_freq)
-        notch_freq_layout.addWidget(self.notch_freq_input)
-        
-        # Quick selection buttons for common frequencies
-        hz50_btn = QtWidgets.QPushButton("50Hz")
-        hz50_btn.setStyleSheet("background-color: #444; min-height: 20px; max-height: 25px;")
-        hz50_btn.clicked.connect(lambda: self.set_notch_freq(50))
-        notch_freq_layout.addWidget(hz50_btn)
-        
-        hz60_btn = QtWidgets.QPushButton("60Hz")
-        hz60_btn.setStyleSheet("background-color: #444; min-height: 20px; max-height: 25px;")
-        hz60_btn.clicked.connect(lambda: self.set_notch_freq(60))
-        notch_freq_layout.addWidget(hz60_btn)
-        
-        notch_layout.addLayout(notch_freq_layout)
-        layout.addWidget(notch_group)
-        
-        # Add spacer at the bottom to push everything up
-        spacer = QtWidgets.QSpacerItem(
-            20, 40, QtWidgets.QSizePolicy.Minimum, QtWidgets.QSizePolicy.Expanding
-        )
-        layout.addItem(spacer)
-        
-        # Add close button
-        close_btn = QtWidgets.QPushButton("Close Settings")
-        close_btn.setStyleSheet("background-color: #555; height: 30px;")
-        close_btn.clicked.connect(self.toggle_settings_panel)
-        layout.addWidget(close_btn)
-        
-        return panel
-        
-    def create_settings_icon(self):
-        """Create a translucent settings icon in the top-left corner"""
-        try:
-            # Create a pushbutton that will float on top of the window
-            icon = QtWidgets.QPushButton(self.window)
-            icon.setToolTip("Signal Processing Settings")
+    def toggle_filter(self, filter_type):
+        """Toggle a specific filter using keyboard shortcut"""
+        if filter_type == 'bandpass':
+            # Toggle the filter in the processor
+            enabled = self.signal_processor.toggle_bandpass()
             
-            # Use a simple text icon instead of system icon for better compatibility
-            icon.setText("⚙")
-            icon.setFont(QtGui.QFont("Arial", 12))
-            
-            # Style the button to be translucent
-            icon.setStyleSheet(
-                "QPushButton {background-color: rgba(60, 60, 60, 150); color: white; border: none; " +
-                "border-radius: 15px; padding: 5px;}" +
-                "QPushButton:hover {background-color: rgba(80, 80, 80, 200);}"
-            )
-            icon.setFixedSize(30, 30)
-            
-            # Position in top-left corner
-            icon.move(15, 15)
-            icon.raise_()
-            icon.show()
-            
-            # Connect click event
-            icon.clicked.connect(self.toggle_settings_panel)
-            
-            return icon
-        except Exception as e:
-            print(f"Error creating settings icon: {e}")
-            return None
-        
-    def toggle_settings_panel(self):
-        """Toggle visibility of the settings panel"""
-        if not self.settings_panel:
-            print("Settings panel not available yet")
-            return
-            
-        currently_visible = self.settings_panel.isVisible()
-        self.settings_panel.setVisible(not currently_visible)
-        
-        # Adjust the grid layout column sizes
-        if not currently_visible:  # Panel becoming visible
-            self.main_grid.setColumnStretch(0, 1)  # Settings panel (25%)
-            self.main_grid.setColumnStretch(1, 3)  # Plot area (75%)
-        else:  # Panel becoming hidden
-            self.main_grid.setColumnStretch(0, 0)  # Settings panel (0%)
-            self.main_grid.setColumnStretch(1, 1)  # Plot area (100%)
-    
-    def toggle_bandpass_filter(self, checked):
-        """Toggle bandpass filter based on checkbox"""
-        self.signal_processor.toggle_bandpass(checked)
-        self.update_title()
-        print(f"Bandpass filter {'enabled' if checked else 'disabled'}")
-        
-    def update_bandpass_range(self):
-        """Update bandpass filter frequency range"""
-        low = self.bp_low_input.value()
-        high = self.bp_high_input.value()
-        
-        # Ensure high is greater than low
-        if high <= low:
-            high = low + 1
-            self.bp_high_input.setValue(high)
-            
-        self.signal_processor.set_bandpass_range(low, high)
-        self.update_title()
-        print(f"Bandpass range updated: {low}-{high} Hz")
-        
-    def toggle_notch_filter(self, checked):
-        """Toggle notch filter based on checkbox"""
-        if hasattr(self.signal_processor, 'toggle_notch'):
-            self.signal_processor.toggle_notch(checked)
+            # Update the menu if it exists
+            if self.settings_menu is not None:
+                self.settings_menu.bp_checkbox.setChecked(enabled)
+                
+            # Update the window title
             self.update_title()
-            print(f"Notch filter {'enabled' if checked else 'disabled'}")
+            print(f"Bandpass filter {'enabled' if enabled else 'disabled'} via shortcut")
             
-    def update_notch_freq(self):
-        """Update notch filter frequency"""
-        freq = self.notch_freq_input.value()
-        if hasattr(self.signal_processor, 'set_notch_freq'):
-            self.signal_processor.set_notch_freq(freq)
-            self.update_title()
-            print(f"Notch frequency updated: {freq} Hz")
-            
-    def set_notch_freq(self, freq):
-        """Set notch frequency from quick buttons"""
-        self.notch_freq_input.setValue(freq)
-        # update_notch_freq will be called by the valueChanged signal
+        elif filter_type == 'notch':
+            # Toggle the notch filter
+            if hasattr(self.signal_processor, 'toggle_notch'):
+                enabled = self.signal_processor.toggle_notch()
+                
+                # Update the menu if it exists
+                if self.settings_menu is not None:
+                    self.settings_menu.notch_checkbox.setChecked(enabled)
+                    
+                # Update the window title
+                self.update_title()
+                print(f"Notch filter {'enabled' if enabled else 'disabled'} via shortcut")
     
     def toggle_fullscreen(self):
         """Toggle fullscreen mode"""
@@ -489,15 +344,7 @@ class BDFSignalMonitor:
         # Pass the event to the parent handler if no shortcut was found
         return super(QtWidgets.QMainWindow, self.window).keyPressEvent(event)
         
-    def toggle_filter(self, filter_type):
-        """Toggle a specific filter using keyboard shortcut"""
-        if filter_type == 'bandpass':
-            enabled = self.signal_processor.toggle_bandpass()
-            # Update checkbox if settings panel exists
-            if hasattr(self, 'bp_checkbox') and self.bp_checkbox:
-                self.bp_checkbox.setChecked(enabled)
-            self.update_title()
-            print(f"Bandpass filter {'enabled' if enabled else 'disabled'} via shortcut")
+
             
     def update_title(self):
         """Update window title with current settings"""

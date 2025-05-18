@@ -477,25 +477,10 @@ class BDFSignalMonitor:
                             # Initialize channel spacing multipliers if needed
                             if len(self.channel_spacing_multipliers) != self.num_channels:
                                 self.channel_spacing_multipliers = np.ones(self.num_channels)
-                            
-                            # Create channel offsets - REVERSED so first channel appears at the TOP
-                            base_offset = 2.0
-                            # Base channel spacing depends on number of channels
-                            base_channel_spacing = base_offset * (2 if self.num_channels <= 30 else 1.5)
-                            
-                            # Calculate cumulative spacing based on multipliers
-                            # This ensures channels with higher multipliers get more space
-                            # First reverse the array so channel 0 is at the top
-                            reversed_multipliers = self.channel_spacing_multipliers[::-1]
-                            
-                            # Calculate cumulative sum of multipliers (from bottom to top)
-                            cumulative_multipliers = np.cumsum(reversed_multipliers)
-                            
-                            # Normalize by total to maintain overall scale
-                            normalized_positions = cumulative_multipliers / np.sum(reversed_multipliers) * (self.num_channels)
-                            
-                            # Adjust to start from the top
-                            self.channel_offsets = normalized_positions[::-1] * base_channel_spacing
+                                
+                            # NOTE: We don't calculate channel_offsets here anymore
+                            # Channel offsets are now calculated consistently in update_plot
+                            # to ensure fixed spacing that doesn't shift between updates
                             
                             # Print some debug info about the data
                             data_min = np.min(data)
@@ -707,19 +692,23 @@ class BDFSignalMonitor:
                     if scale_factor < 1.0:
                         print("Warning: Scale factor may be too small - signals might appear flat")
                 
+                # Use a fixed, consistent channel spacing approach
+                # Each channel gets an equal amount of vertical space
+                channel_spacing = 2.0  # Fixed spacing between channels - NEVER CHANGES BETWEEN UPDATES
                 
-                # Calculate channel offsets, with spacing proportional to the number of channels
-                # Use a fixed offset that doesn't depend on y_scale to avoid rescaling issues
-                base_offset = 2.0  # Fixed offset between channels regardless of scale
-                
-                if self.num_channels > 30:
-                    channel_spacing = base_offset * 1.5
-                else:
-                    channel_spacing = base_offset * 2
+                # Reset channel offsets and apply multipliers consistently
+                if len(self.channel_spacing_multipliers) != self.num_channels:
+                    # Initialize multipliers if needed
+                    self.channel_spacing_multipliers = np.ones(self.num_channels)
                 
                 # IMPORTANT: Reverse the channel order so first channel is at top, last at bottom
+                # Use simple approach: fixed spacing × index from top
                 self.channel_offsets = (self.num_channels - 1 - np.arange(self.num_channels)) * channel_spacing
-                print(f"Channel spacing: {channel_spacing}, Using {'auto' if self.auto_scale else 'fixed'} scale: {self.y_scale:.8f} µV")
+                print(f"Fixed channel spacing: {channel_spacing}, Using {'auto' if self.auto_scale else 'fixed'} scale: {self.y_scale:.8f} µV")
+                
+                # Set consistent clipping limits to prevent signal overlap
+                # Each channel is limited to 45% of the distance to the next channel (90% of available height)
+                self.channel_max_amp = 0.9  # 90% of channel spacing for signal amplitude
                 
                 # Update or initialize per-channel scaling factors
                 if len(self.channel_scales) != data.shape[0]:
@@ -808,6 +797,29 @@ class BDFSignalMonitor:
                             pen=self.grid_pen
                         )
                         self.plot_widget.addItem(grid_line)
+                    
+                    # Add horizontal channel boundary lines (subtle grid showing channel limits)
+                    # These serve as visual indicators of where channels will be clipped
+                    boundary_pen = pg.mkPen(color='#444444', width=1, style=QtCore.Qt.DashLine)
+                    for i in range(self.num_channels + 1):
+                        # Calculate position (top boundary, between channels, bottom boundary)
+                        if i == 0:
+                            # Top boundary
+                            pos = self.channel_offsets[0] + (channel_spacing * self.channel_max_amp / 2.0)
+                        elif i == self.num_channels:
+                            # Bottom boundary
+                            pos = self.channel_offsets[-1] - (channel_spacing * self.channel_max_amp / 2.0)
+                        else:
+                            # Mid-channel boundary (halfway between channels)
+                            pos = (self.channel_offsets[i-1] + self.channel_offsets[i]) / 2.0
+                            
+                        # Create horizontal line
+                        grid_line = pg.InfiniteLine(
+                            pos=pos,
+                            angle=0,
+                            pen=boundary_pen
+                        )
+                        self.plot_widget.addItem(grid_line)
                         
                     # Update ticks
                     self.plot_widget.getAxis('bottom').setTicks([x_ticks])
@@ -829,12 +841,16 @@ class BDFSignalMonitor:
                         # Apply channel scaling to the data
                         scaled_data = data[i] * channel_scale
                         
-                        # When using fixed scale, we want to ensure each channel is plotted relative to its own zero line
-                        # Each channel gets positioned at its vertical offset position on the screen
-                        # This keeps proper calibrated scaling for each channel
+                        # Apply clipping to ensure signal stays within its channel boundaries
+                        # Calculate clip limits based on channel spacing
+                        clip_limit = channel_spacing * self.channel_max_amp / 2.0
+                        # Clip the scaled data to stay within bounds
+                        clipped_data = np.clip(scaled_data, -clip_limit, clip_limit)
+                        
+                        # Plot the clipped data with vertical offset for stacking channels
                         plot = self.plot_widget.plot(
                             times, 
-                            scaled_data + self.channel_offsets[i],  # Add vertical offset for stacking channels
+                            clipped_data + self.channel_offsets[i],  # Apply channel offset
                             pen=yellow_pen,
                             name=self.channel_labels[i]
                         )

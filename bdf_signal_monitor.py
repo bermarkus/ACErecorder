@@ -686,12 +686,46 @@ class BDFSignalMonitor:
                 else:
                     print("Warning: Not enough data to trim padding")
                     
-                # Determine scale factor based on scaling mode
+                # ===== Initialize all variables needed for channel display =====
+                # Initialize with default values to prevent any 'referenced before assignment' errors
                 max_amp = np.max(np.abs(data))
+                reference_channels_to_skip = []
+                displayed_channel_indices = []
+                num_displayed_channels = self.num_channels
+                spacing_multiplier = 1.0
                 
                 # Data values are likely in millivolts but we want to display in microvolts
                 # Need to apply a conversion from mV to µV (x1000)
                 conversion_factor = 1000.0  # Convert mV to µV
+                
+                # Determine which channels to skip when using Linked Ears reference
+                if hasattr(self, 'signal_processor') and self.signal_processor and \
+                   self.signal_processor.reference_mode == 'linked_ears':
+                    # Skip A1 and A2 channels when using Linked Ears reference
+                    reference_channels_to_skip = self.signal_processor.reference_channels
+                    print(f"Skipping reference channels: {reference_channels_to_skip}")
+                
+                # Create a list of channels that will be displayed
+                # This will exclude reference channels when using Linked Ears reference
+                displayed_channel_indices = []
+                for i in range(min(self.num_channels, data.shape[0])):
+                    if i < len(self.channel_labels) and self.channel_labels[i] not in reference_channels_to_skip:
+                        displayed_channel_indices.append(i)
+                
+                # Count how many channels will actually be displayed
+                num_displayed_channels = len(displayed_channel_indices)
+                if num_displayed_channels == 0:  # Fallback if no channels would be displayed
+                    num_displayed_channels = self.num_channels
+                    displayed_channel_indices = list(range(min(self.num_channels, data.shape[0])))
+                
+                print(f"Displaying {num_displayed_channels} channels out of {self.num_channels} total")
+                
+                # Calculate spacing multiplier for channel distribution
+                if num_displayed_channels < self.num_channels and num_displayed_channels > 0:
+                    spacing_multiplier = self.num_channels / num_displayed_channels
+                    print(f"Increasing channel spacing by factor of {spacing_multiplier:.2f}")
+                else:
+                    spacing_multiplier = 1.0
                 
                 if self.auto_scale:
                     # Auto scaling: adapt to data amplitude
@@ -716,17 +750,32 @@ class BDFSignalMonitor:
                 
                 # Use a fixed, consistent channel spacing approach
                 # Each channel gets an equal amount of vertical space
-                channel_spacing = 2.0  # Fixed spacing between channels - NEVER CHANGES BETWEEN UPDATES
+                base_channel_spacing = 2.0  # Base spacing between channels
+                channel_spacing = base_channel_spacing * spacing_multiplier
                 
-                # Reset channel offsets and apply multipliers consistently
-                if len(self.channel_spacing_multipliers) != self.num_channels:
-                    # Initialize multipliers if needed
-                    self.channel_spacing_multipliers = np.ones(self.num_channels)
+                # Simplify channel offset calculation to prevent errors
+                # Initialize to zeros first
+                self.channel_offsets = np.zeros(self.num_channels)
                 
-                # IMPORTANT: Reverse the channel order so first channel is at top, last at bottom
-                # Use simple approach: fixed spacing × index from top
-                self.channel_offsets = (self.num_channels - 1 - np.arange(self.num_channels)) * channel_spacing
-                print(f"Fixed channel spacing: {channel_spacing}, Using {'auto' if self.auto_scale else 'fixed'} scale: {self.y_scale:.8f} µV")
+                # Only set positions for displayed channels
+                position_map = {}
+                
+                # First create a mapping from original index to position in displayed order
+                for display_pos, idx in enumerate(displayed_channel_indices):
+                    # Reverse order (top to bottom)
+                    visual_pos = (num_displayed_channels - 1 - display_pos) * channel_spacing
+                    position_map[idx] = visual_pos
+                
+                # Apply positions to channel offsets
+                for i in range(self.num_channels):
+                    if i in position_map:
+                        self.channel_offsets[i] = position_map[i]
+                
+                print(f"Channel spacing: {channel_spacing:.2f} (using {num_displayed_channels} displayed channels), "
+                      f"Scale: {self.y_scale:.1f} µV {'auto' if self.auto_scale else 'fixed'}")
+                      
+                # Log channel offsets for debugging
+                print(f"Channel offsets: {len(self.channel_offsets)} total, {len(position_map)} visible")
                 
                 # Set consistent clipping limits to prevent signal overlap
                 # Each channel is limited to 45% of the distance to the next channel (90% of available height)
@@ -853,7 +902,40 @@ class BDFSignalMonitor:
                     # Create yellow pen for all plots
                     yellow_pen = pg.mkPen(color='#ffff00', width=1)
                     
+                    # Create a list of reference channels to skip when using Linked Ears reference
+                    reference_channels_to_skip = []
+                    if hasattr(self, 'signal_processor') and self.signal_processor and \
+                       self.signal_processor.reference_mode == 'linked_ears':
+                        # Skip A1 and A2 channels when using Linked Ears reference
+                        reference_channels_to_skip = self.signal_processor.reference_channels
+                        print(f"Skipping reference channels: {reference_channels_to_skip}")
+                        
+                    # Create a list of channels that will actually be displayed
+                    # This is used to properly redistribute vertical space
+                    displayed_channel_indices = []
                     for i in range(min(self.num_channels, data.shape[0])):
+                        if self.channel_labels[i] not in reference_channels_to_skip:
+                            displayed_channel_indices.append(i)
+                    
+                    # Count how many channels will actually be displayed
+                    num_displayed_channels = len(displayed_channel_indices)
+                    print(f"Displaying {num_displayed_channels} channels out of {self.num_channels} total")
+                    
+                    # Adjust channel spacing based on how many channels are actually displayed
+                    # This ensures we use the entire vertical space efficiently
+                    if num_displayed_channels < self.num_channels and num_displayed_channels > 0:
+                        # Redistribute the vertical space among displayed channels
+                        # Use the ratio of total to displayed channels to increase spacing
+                        spacing_multiplier = self.num_channels / num_displayed_channels
+                        print(f"Increasing channel spacing by factor of {spacing_multiplier:.2f}")
+                    else:
+                        spacing_multiplier = 1.0
+                    
+                    for i in range(min(self.num_channels, data.shape[0])):
+                        # Skip A1/A2 channels when using Linked Ears reference
+                        if self.channel_labels[i] in reference_channels_to_skip:
+                            print(f"Skipping channel {self.channel_labels[i]} (used as reference)")
+                            continue
                         # Apply individual channel scaling if enabled
                         if self.per_channel_scale:
                             channel_scale = self.channel_scales[i]
@@ -905,6 +987,10 @@ class BDFSignalMonitor:
                     
                     for i in label_indices:
                         if i < data.shape[0]:
+                            # Skip labels for A1/A2 channels when using Linked Ears reference
+                            if self.channel_labels[i] in reference_channels_to_skip:
+                                continue
+                                
                             # Create left side label only
                             left_label = pg.TextItem(
                                 text=self.channel_labels[i],

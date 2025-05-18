@@ -99,8 +99,10 @@ class EEGSignalProcessor:
             raw.filter(
                 l_freq=self.bandpass_low, 
                 h_freq=self.bandpass_high,
-                method='iir',
-                iir_params=dict(order=4, ftype='butter'),
+                method='fir',                   # FIR filter has better edge behavior
+                fir_design='firwin',            # Windowed FIR filter design
+                fir_window='hamming',           # Hamming window for smoother transition
+                pad='edge',                     # Edge padding reduces boundary artifacts
                 verbose=False
             )
             
@@ -108,8 +110,8 @@ class EEGSignalProcessor:
         if self.notch_enabled:
             raw.notch_filter(
                 freqs=self.notch_freq,
-                method='iir',
-                iir_params=dict(order=4, ftype='butter'),
+                method='fir',                   # FIR filter has better edge behavior
+                fir_design='firwin',            # Windowed FIR filter design
                 verbose=False
             )
         

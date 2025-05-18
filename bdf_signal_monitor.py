@@ -51,8 +51,10 @@ class BDFSignalMonitor:
         self.num_channels = 0
         self.channel_offsets = []  # For stacking channels vertically
         self.channel_scales = []   # Individual scaling for each channel
-        self.y_scale = 1.0  # Global scaling factor
-        self.auto_scale = True  # Enable auto-scaling based on data
+        self.channel_spacing_multipliers = []  # Multipliers for vertical spacing (default 1.0)
+        self.y_scale = 30.0  # Default scale in µV (30µV is default)
+        self.auto_scale = False  # Default to fixed scaling (not auto-scaling)
+        self._auto_scale_value = 1.0  # Separate value for auto-scaling tracking
         self.per_channel_scale = True  # Scale each channel individually
         
         # Create settings menu (initially hidden)
@@ -82,8 +84,18 @@ class BDFSignalMonitor:
                 QtCore.Qt.WindowStaysOnTopHint
             )
             
-            # Create central widget and layout
+            # Apply stylesheet to minimize borders in the application
+            self.window.setStyleSheet("""
+                QMainWindow { background-color: #404040; }
+                QMainWindow::separator { width: 0; height: 0; }
+                QGraphicsView { border: none; background: #404040; }
+                QFrame { border: none; }
+                QWidget { background-color: #404040; }
+            """)
+            
+            # Create central widget with minimal layout
             central_widget = QtWidgets.QWidget()
+            central_widget.setContentsMargins(0, 0, 0, 0)
             self.window.setCentralWidget(central_widget)
             main_layout = QtWidgets.QVBoxLayout(central_widget)
             main_layout.setContentsMargins(0, 0, 0, 0)
@@ -109,10 +121,17 @@ class BDFSignalMonitor:
             # Set up PyQtGraph
             pg.setConfigOptions(antialias=False)  # Disable antialiasing for better performance
             
-            # Create the plot widget with dark background and no border
+            # Create the plot widget with dark background
             self.plot_widget = pg.PlotWidget(background='#404040')
             self.plot_widget.setBackground('#404040')  # Dark gray background
             plot_layout.addWidget(self.plot_widget)
+            
+            # CRITICAL: Directly modify the QGraphicsView to remove frame border
+            # This is the core issue - PyQtGraph has a built-in frame border that needs to be removed
+            graphics_view = self.plot_widget.plotItem.getViewBox().parentItem().getViewWidget()
+            graphics_view.setFrameShape(QtWidgets.QFrame.NoFrame)
+            graphics_view.setLineWidth(0)
+            graphics_view.setContentsMargins(0, 0, 0, 0)
             
             # Disable default grid - we'll add custom grid lines
             self.plot_widget.showGrid(x=False, y=False)
@@ -126,17 +145,19 @@ class BDFSignalMonitor:
                 
             # Apply border removal stylesheet to the whole widget
             self.plot_widget.setStyleSheet("""                
-                QGraphicsView { border: 0px; }
-                QGraphicsScene { border: 0px; }
-                QFrame { border: 0px; }
+                QGraphicsView { border: 0px; padding: 0px; margin: 0px; }
+                QGraphicsScene { border: 0px; padding: 0px; margin: 0px; }
+                QFrame { border: 0px; padding: 0px; margin: 0px; }
+                QMainWindow { border: 0px; padding: 0px; margin: 0px; }
+                QWidget { border: 0px; padding: 0px; margin: 0px; }
             """)
             
             # Add plot widget to main layout
             main_layout.addWidget(self.plot_widget)
             
-            # Configure appearance - no left axis for channel labels
-            self.plot_widget.setLabel('bottom', 'Time', 'seconds', color='white')
-            self.plot_widget.getAxis('left').setStyle(showValues=False)  # Hide values on left axis
+            # Hide all axes completely
+            for side in ['left', 'bottom', 'right', 'top']:
+                self.plot_widget.showAxis(side, False)
             
             # Set plot to take up full width by removing all margins and borders
             self.plot_widget.getPlotItem().getViewBox().setDefaultPadding(0)  # Remove padding
@@ -148,8 +169,23 @@ class BDFSignalMonitor:
             self.plot_widget.centralWidget.layout.setContentsMargins(0, 0, 0, 0)
             self.plot_widget.centralWidget.layout.setSpacing(0)
             
-            # Initial title
-            self.plot_widget.setTitle("EEG Signal Monitor (Last 10 seconds)", color='white', size='14pt')
+            # Further eliminate borders and margins on the view box
+            view_box = self.plot_widget.getPlotItem().getViewBox()
+            view_box.setMouseEnabled(x=True, y=True)  # Keep mouse interactions
+            view_box.border = pg.mkPen(color=None)  # No border pen
+            
+            # Hide the axes completely and remove their space allocation
+            self.plot_widget.getPlotItem().showAxis('bottom', False)
+            self.plot_widget.getPlotItem().getAxis('bottom').setHeight(0)
+            
+            # Ensure the window itself doesn't add borders
+            if self.window:
+                self.window.setContentsMargins(0, 0, 0, 0)
+                self.window.centralWidget().layout().setContentsMargins(0, 0, 0, 0)
+                self.window.centralWidget().layout().setSpacing(0)
+            
+            # Remove title completely
+            self.plot_widget.setTitle("")
             
             # Set axis colors
             axis_pen = pg.mkPen(color='#808080', width=1)
@@ -438,10 +474,28 @@ class BDFSignalMonitor:
                             print(f"Channel labels from BDF: {self.channel_labels}")
                             
 
+                            # Initialize channel spacing multipliers if needed
+                            if len(self.channel_spacing_multipliers) != self.num_channels:
+                                self.channel_spacing_multipliers = np.ones(self.num_channels)
+                            
                             # Create channel offsets - REVERSED so first channel appears at the TOP
                             base_offset = 2.0
-                            channel_spacing = base_offset * (2 if self.num_channels <= 30 else 1.5)
-                            self.channel_offsets = (self.num_channels - 1 - np.arange(self.num_channels)) * channel_spacing
+                            # Base channel spacing depends on number of channels
+                            base_channel_spacing = base_offset * (2 if self.num_channels <= 30 else 1.5)
+                            
+                            # Calculate cumulative spacing based on multipliers
+                            # This ensures channels with higher multipliers get more space
+                            # First reverse the array so channel 0 is at the top
+                            reversed_multipliers = self.channel_spacing_multipliers[::-1]
+                            
+                            # Calculate cumulative sum of multipliers (from bottom to top)
+                            cumulative_multipliers = np.cumsum(reversed_multipliers)
+                            
+                            # Normalize by total to maintain overall scale
+                            normalized_positions = cumulative_multipliers / np.sum(reversed_multipliers) * (self.num_channels)
+                            
+                            # Adjust to start from the top
+                            self.channel_offsets = normalized_positions[::-1] * base_channel_spacing
                             
                             # Print some debug info about the data
                             data_min = np.min(data)
@@ -451,15 +505,20 @@ class BDFSignalMonitor:
                             print(f"Read BDF data: shape={data.shape}, time points={len(times)}, sample rate={raw.info['sfreq']}")
                             print(f"Value range: min={data_min:.2f}, max={data_max:.2f}, range={data_range:.2f}")
                             
-                            # Auto-adjust y_scale based on actual data range if needed
+                            # Auto-adjust scaling value ONLY if auto_scale is enabled
+                            # This value is used in update_plot to determine display scaling
                             if self.auto_scale and data_range > 0:
-                                # Set y_scale to make typical signals about 1.0 units high
-                                # with a safety factor of 10 to prevent tiny signals
+                                # Calculate a new suggested scale based on data range
                                 suggested_scale = 2.0 / max(data_range, 0.0001)
-                                # Limit how much the scale can change at once
-                                if abs(suggested_scale / self.y_scale) > 100 or abs(suggested_scale / self.y_scale) < 0.01:
+                                
+                                # Only update if the suggested scale is significantly different
+                                # (between 0.1x and 10x the current scale)
+                                scale_ratio = suggested_scale / self.y_scale
+                                if 0.1 <= scale_ratio <= 10.0:
                                     self.y_scale = suggested_scale
                                     print(f"Auto-adjusted y_scale to {self.y_scale:.8f} based on data range {data_range:.8f}")
+                                # If we're in auto mode but not updating, still store the scale for reference
+                                self._auto_scale_value = suggested_scale
                             
                             # Put the data in the queue/list for the UI thread to consume
                             # Limit queue size to avoid backlog
@@ -503,11 +562,65 @@ class BDFSignalMonitor:
             if self.signal_processor:
                 self.channel_labels = self.signal_processor.get_channel_display_labels(self.original_channel_labels)
             else:
-                self.channel_labels = self.original_channel_labels
-                
+                self.channel_labels = self.original_channel_labels.copy()
+            
             # Force a redraw of the plot to show updated labels
-            if hasattr(self, 'data') and self.data is not None:
+            self.update_plot(force_labels=True)
+            
+    def set_channel_spacing_multiplier(self, channel_name, multiplier):
+        """Set a custom spacing multiplier for a specific channel
+        
+        Args:
+            channel_name: Name of the channel to adjust spacing for
+            multiplier: Spacing multiplier (1.0 is default, >1.0 increases space, <1.0 decreases)
+        """
+        if not hasattr(self, 'original_channel_labels') or not self.original_channel_labels:
+            print("Cannot set multiplier: channel labels not initialized")
+            return False
+            
+        if channel_name in self.original_channel_labels:
+            channel_idx = self.original_channel_labels.index(channel_name)
+            if 0 <= channel_idx < len(self.channel_spacing_multipliers):
+                self.channel_spacing_multipliers[channel_idx] = float(multiplier)
+                print(f"Set spacing multiplier for {channel_name} to {multiplier}")
+                # Update the display to reflect the new spacing
                 self.update_plot(force_labels=True)
+                return True
+                
+        print(f"Channel {channel_name} not found")
+        return False
+        
+    def set_channel_group_spacing_multipliers(self, channel_pattern, multiplier):
+        """Set spacing multipliers for all channels matching a pattern
+        
+        Args:
+            channel_pattern: String pattern to match channel names (case insensitive)
+            multiplier: Spacing multiplier (1.0 is default, >1.0 increases space, <1.0 decreases)
+        """
+        if not hasattr(self, 'original_channel_labels') or not self.original_channel_labels:
+            print("Cannot set multipliers: channel labels not initialized")
+            return 0
+            
+        count = 0
+        for i, channel in enumerate(self.original_channel_labels):
+            if channel_pattern.lower() in channel.lower():
+                if i < len(self.channel_spacing_multipliers):
+                    self.channel_spacing_multipliers[i] = float(multiplier)
+                    count += 1
+                    
+        print(f"Set spacing multiplier for {count} channels matching '{channel_pattern}'")
+        if count > 0:
+            # Update the display to reflect the new spacing
+            self.update_plot(force_labels=True)
+        return count
+        
+    def reset_channel_spacing_multipliers(self):
+        """Reset all channel spacing multipliers to default (1.0)"""
+        self.channel_spacing_multipliers = np.ones(self.num_channels)
+        print("Reset all channel spacing multipliers to 1.0")
+        # Update the display to reflect the reset spacing
+        self.update_plot(force_labels=True)
+        return True
     
     def update_plot(self, force_labels=False):
         """Update the visual display of the monitor"""
@@ -566,14 +679,34 @@ class BDFSignalMonitor:
                 self.plot_widget.clear()
                 self.plots = []
                 
-                # Determine scale factor based on max amplitude
+                # Determine scale factor based on scaling mode
                 max_amp = np.max(np.abs(data))
-                if max_amp > 0:
-                    # Apply both the auto-scale factor and a scaling to use 80% of available channel space
-                    scale_factor = 0.8 / max_amp * self.y_scale
-                    print(f"Plot scale_factor: {scale_factor:.8f} for max_amp: {max_amp:.8f}")
+                
+                # Data values are likely in millivolts but we want to display in microvolts
+                # Need to apply a conversion from mV to µV (x1000)
+                conversion_factor = 1000.0  # Convert mV to µV
+                
+                if self.auto_scale:
+                    # Auto scaling: adapt to data amplitude
+                    if max_amp > 0:
+                        # Use 80% of available channel space
+                        scale_factor = 0.8 / max_amp
+                        print(f"Auto scaling with factor: {scale_factor:.8f} for max_amp: {max_amp:.8f}")
+                    else:
+                        # Default scale if no amplitude
+                        scale_factor = 0.01
                 else:
-                    scale_factor = self.y_scale  # Use current y_scale directly
+                    # Fixed scale mode: use the selected µV value
+                    # If data is in millivolts but scale is in microvolts, we need to adjust
+                    # For example: 30µV scale, data point of 0.03mV = 30µV should be 1.0 unit high
+                    # So we multiply by conversion_factor and then divide by scale value
+                    scale_factor = conversion_factor / self.y_scale
+                    print(f"Fixed scaling at {self.y_scale} µV with factor: {scale_factor:.8f} (data in mV)")
+                    
+                    # Ensure scale factor isn't too small to see anything
+                    if scale_factor < 1.0:
+                        print("Warning: Scale factor may be too small - signals might appear flat")
+                
                 
                 # Calculate channel offsets, with spacing proportional to the number of channels
                 # Use a fixed offset that doesn't depend on y_scale to avoid rescaling issues
@@ -586,15 +719,15 @@ class BDFSignalMonitor:
                 
                 # IMPORTANT: Reverse the channel order so first channel is at top, last at bottom
                 self.channel_offsets = (self.num_channels - 1 - np.arange(self.num_channels)) * channel_spacing
-                print(f"Channel spacing: {channel_spacing}, Using y_scale: {self.y_scale:.8f}")
+                print(f"Channel spacing: {channel_spacing}, Using {'auto' if self.auto_scale else 'fixed'} scale: {self.y_scale:.8f} µV")
                 
                 # Update or initialize per-channel scaling factors
-                if len(self.channel_scales) != data.shape[0] or not self.per_channel_scale:
-                    # Initialize with default scaling
-                    self.channel_scales = [self.y_scale] * data.shape[0]
+                if len(self.channel_scales) != data.shape[0]:
+                    # Initialize with uniform scaling
+                    self.channel_scales = [scale_factor] * data.shape[0]
                 
-                # Calculate individual channel scales if enabled
-                if self.per_channel_scale:
+                # Calculate individual channel scales ONLY IF in auto-scale mode AND per-channel scaling enabled
+                if self.auto_scale and self.per_channel_scale:
                     for i in range(data.shape[0]):
                         # Get amplitude of this channel
                         channel_max = np.max(np.abs(data[i]))
@@ -603,6 +736,10 @@ class BDFSignalMonitor:
                             target_scale = 0.8 / channel_max
                             # Smooth the scale change to avoid abrupt changes
                             self.channel_scales[i] = self.channel_scales[i] * 0.7 + target_scale * 0.3
+                elif not self.auto_scale:
+                    # In fixed scale mode, ensure all channels use the same fixed scale
+                    for i in range(data.shape[0]):
+                        self.channel_scales[i] = scale_factor
                     
                     # Print some debug about the channel scales
                     print(f"Channel scales - min: {min(self.channel_scales):.4f}, max: {max(self.channel_scales):.4f}")
@@ -689,13 +826,15 @@ class BDFSignalMonitor:
                         else:
                             channel_scale = scale_factor
                             
-                        # Center the signal around its offset
+                        # Apply channel scaling to the data
                         scaled_data = data[i] * channel_scale
                         
-                        # Plot with yellow color
+                        # When using fixed scale, we want to ensure each channel is plotted relative to its own zero line
+                        # Each channel gets positioned at its vertical offset position on the screen
+                        # This keeps proper calibrated scaling for each channel
                         plot = self.plot_widget.plot(
                             times, 
-                            scaled_data + self.channel_offsets[i],
+                            scaled_data + self.channel_offsets[i],  # Add vertical offset for stacking channels
                             pen=yellow_pen,
                             name=self.channel_labels[i]
                         )
@@ -732,18 +871,9 @@ class BDFSignalMonitor:
                             left_label.setPos(left_edge, self.channel_offsets[i])
                             self.plot_widget.addItem(left_label)
                 
-                # Update title with current info and scaling mode
-                title = "EEG Signal Monitor"
-                if self.current_bdf_file:
-                    title += f" - {os.path.basename(self.current_bdf_file)}"
-                    
-                # Add scaling mode information
-                if self.per_channel_scale:
-                    title += " (Per-channel scaling)"
-                else:
-                    title += " (Global scaling)"
-                
-                self.plot_widget.setTitle(title, color='white', size='14pt')
+                # Title has been removed as requested
+                # Set an empty title to remove the header space completely
+                self.plot_widget.setTitle("")
                 
                 # Grid lines are added explicitly as InfiniteLines
                 

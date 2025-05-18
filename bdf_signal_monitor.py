@@ -450,10 +450,18 @@ class BDFSignalMonitor:
                                 
                             print(f"BDF loaded successfully with {len(raw.ch_names)} channels")
                             
-                            # Get data for the last window_length seconds
-                            # Calculate the start index as an integer
-                            start_idx = max(0, int(len(raw.times) - self.window_length * raw.info['sfreq']))
+                            # Get data for the last window_length seconds PLUS padding for filter edges
+                            # Add extra padding (1 second) to reduce filter edge effects
+                            filter_padding = 1.0  # seconds of extra data for filter edge effects
+                            
+                            # Calculate start index with padding
+                            padded_length = self.window_length + (2 * filter_padding)
+                            start_idx = max(0, int(len(raw.times) - padded_length * raw.info['sfreq']))
+                            
+                            # Get padded data window
                             data, times = raw[:, start_idx:]
+                            
+                            # We'll trim the padding after processing in update_plot
                             
                             # Verify data integrity
                             if data.size == 0 or times.size == 0:
@@ -664,6 +672,20 @@ class BDFSignalMonitor:
                 self.plot_widget.clear()
                 self.plots = []
                 
+                # Trim padding from the data window before display
+                # We added extra data at both ends to reduce filter edge effects
+                # Now we need to remove it before displaying
+                filter_padding_samples = int(1.0 * sfreq)  # 1 second padding on each side
+                
+                # Ensure we have enough data to trim
+                if data.shape[1] > 2 * filter_padding_samples:
+                    # Trim the padding from both ends
+                    data = data[:, filter_padding_samples:-filter_padding_samples]
+                    times = times[filter_padding_samples:-filter_padding_samples]
+                    print(f"Trimmed filter padding: data shape now {data.shape}, time points: {len(times)}")
+                else:
+                    print("Warning: Not enough data to trim padding")
+                    
                 # Determine scale factor based on scaling mode
                 max_amp = np.max(np.abs(data))
                 
@@ -841,11 +863,18 @@ class BDFSignalMonitor:
                         # Apply channel scaling to the data
                         scaled_data = data[i] * channel_scale
                         
-                        # Apply clipping to ensure signal stays within its channel boundaries
-                        # Calculate clip limits based on channel spacing
+                        # Calculate boundary limits for this channel
                         clip_limit = channel_spacing * self.channel_max_amp / 2.0
-                        # Clip the scaled data to stay within bounds
-                        clipped_data = np.clip(scaled_data, -clip_limit, clip_limit)
+                        
+                        # Instead of clipping to the boundaries, we'll make out-of-bounds values disappear
+                        # by setting them to NaN (Not a Number), which PyQtGraph will interpret as a break in the line
+                        clipped_data = scaled_data.copy()
+                        
+                        # Create mask for out-of-bounds values (both above and below limits)
+                        out_of_bounds_mask = (clipped_data > clip_limit) | (clipped_data < -clip_limit)
+                        
+                        # Replace out-of-bounds values with NaN to make them invisible
+                        clipped_data[out_of_bounds_mask] = np.nan
                         
                         # Plot the clipped data with vertical offset for stacking channels
                         plot = self.plot_widget.plot(

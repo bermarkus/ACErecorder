@@ -10,7 +10,7 @@ import threading
 import os
 import serial
 from serial.tools import list_ports
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 import sys
 import traceback
@@ -834,8 +834,9 @@ class ACErecorder:
         messagebox.showinfo("About", "ACErecorder\nVersion 1.0\nA simple EEG recording application.")
 
     def generate_filename(self):
-        """Generate filename with date-time prefix"""
-        current_time = datetime.now().strftime("%d-%m-%Y_%H-%M-%S")  
+        """Generate filename with ISO UTC timestamp"""
+        # Use UTC time (indicated by Z suffix)
+        current_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
         suffix = self.filename_var.get().strip()
         if suffix:
             filename = f"{current_time}_{suffix}.bdf"

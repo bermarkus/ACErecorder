@@ -11,13 +11,15 @@ from mne.io import read_raw_bdf
 class BDFSignalMonitor:
     def __init__(self, parent=None):
         """Initialize the BDF signal monitor window"""
-        self.parent = parent
+        # Don't store parent reference to avoid any connection between windows
+        self.parent = None
         self.window = None
         self.plot_widget = None
         self.plots = []
         self.channel_labels = []
         self.update_interval = 1000  # 1Hz update rate in milliseconds
         self.window_length = 10  # 10 seconds of data
+        self.fullscreen_mode = False
         
         # Threading and monitoring control
         self.monitor_thread = None
@@ -37,10 +39,15 @@ class BDFSignalMonitor:
         self.auto_scale = True  # Enable auto-scaling based on data
         self.per_channel_scale = True  # Scale each channel individually
         
-        # Make sure the application exists
-        self.app = QtWidgets.QApplication.instance()
-        if not self.app:
+        # Make sure the application exists - create new instance to isolate from Tkinter
+        # Get existing instance but don't use it to avoid Tkinter interaction
+        existing_app = QtWidgets.QApplication.instance()
+        
+        # Only create a new instance if one doesn't exist
+        if not existing_app:
             self.app = QtWidgets.QApplication([])
+        else:
+            self.app = existing_app
 
     def create_window(self):
         """Create the signal monitor window if it doesn't exist"""
@@ -62,24 +69,6 @@ class BDFSignalMonitor:
             main_layout = QtWidgets.QVBoxLayout(central_widget)
             main_layout.setContentsMargins(0, 0, 0, 0)
             main_layout.setSpacing(0)
-            
-            # Create a button bar at the top
-            button_bar = QtWidgets.QHBoxLayout()
-            
-            # Add minimize button
-            minimize_btn = QtWidgets.QPushButton("Minimize")
-            minimize_btn.clicked.connect(self.minimize_window)
-            button_bar.addWidget(minimize_btn)
-            
-            # Add fullscreen toggle button
-            self.fullscreen_btn = QtWidgets.QPushButton("Exit Fullscreen")
-            self.fullscreen_btn.clicked.connect(self.toggle_fullscreen)
-            button_bar.addWidget(self.fullscreen_btn)
-            
-            # Add button bar to main layout
-            button_widget = QtWidgets.QWidget()
-            button_widget.setLayout(button_bar)
-            main_layout.addWidget(button_widget)
             
             # Set up PyQtGraph
             pg.setConfigOptions(antialias=False)  # Disable antialiasing for better performance
@@ -157,14 +146,15 @@ class BDFSignalMonitor:
             # Handle close event - redirect to minimize
             self.window.closeEvent = self.handle_close_event
             
-            # Switch to fullscreen mode
-            self.window.showFullScreen()
-            self.fullscreen_mode = True
+            # Use a completely separate window process approach
+            # Initially hide the window
+            self.window.hide()
             
-            # Ensure window is visible
-            self.window.show()
-            self.window.raise_()
-            print("BDF Signal Monitor window created and displayed")
+            # Use a more controlled approach to showing the window
+            # Delay display to avoid interference with the main window
+            QtCore.QTimer.singleShot(1000, self._show_window_safely)
+            
+            print("BDF Signal Monitor window created and will display shortly")
             
     def handle_close_event(self, event):
         """Handle window close event - redirect to minimize"""
@@ -176,15 +166,33 @@ class BDFSignalMonitor:
         if self.window:
             self.window.showMinimized()
     
+    def _show_window_safely(self):
+        """Show the window with precautions to avoid affecting Tkinter"""
+        if self.window:
+            # Make sure we're completely detached from any parent window
+            self.window.setParent(None)
+            
+            # Process any pending events before showing
+            self.app.processEvents()
+            
+            # Show in maximized mode (not fullscreen)
+            self.window.showMaximized()
+            self.fullscreen_mode = False
+            
+            # Make sure it's visible and on top
+            self.window.raise_()
+            self.window.activateWindow()
+            
+            print("BDF Signal Monitor now displayed in maximized mode")
+            
     def toggle_fullscreen(self):
         """Toggle fullscreen mode"""
         if self.fullscreen_mode:
-            self.window.showNormal()
-            self.fullscreen_btn.setText("Enter Fullscreen")
+            # Return to maximized mode (not normal size)
+            self.window.showMaximized()
             self.fullscreen_mode = False
         else:
             self.window.showFullScreen()
-            self.fullscreen_btn.setText("Exit Fullscreen")
             self.fullscreen_mode = True
     
     def close_monitor(self):

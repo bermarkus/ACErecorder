@@ -703,20 +703,59 @@ class ACErecorder:
                 self.close_bdf_signal_monitor()
             except:
                 pass
-                
+        
+        # Store current window state before signal monitor creation
+        self._store_window_state()
+        
         # Create a new BDF signal monitor
         try:
-            # Create the monitor instance
-            self.bdf_signal_monitor = BDFSignalMonitor(parent=self.root)
+            # Create the monitor instance with no parent
+            self.bdf_signal_monitor = BDFSignalMonitor(parent=None)
             
             # Start monitoring the BDF file
             self.bdf_signal_monitor.start_monitoring(self.output_file)
+            
+            # Schedule multiple restoration attempts to ensure window size is maintained
+            self._schedule_window_restoration()
             
             print("Successfully created BDF signal monitor window")
         except Exception as e:
             print(f"Error initializing BDF signal monitor: {e}")
             import traceback
             traceback.print_exc()
+    
+    def _store_window_state(self):
+        """Store current window state for later restoration"""
+        # Save multiple properties to ensure complete restoration
+        self._original_geometry = self.root.geometry()
+        self._original_width = self.root.winfo_width()
+        self._original_height = self.root.winfo_height()
+        self._original_x = self.root.winfo_x()
+        self._original_y = self.root.winfo_y()
+        print(f"Stored window state: {self._original_geometry} ({self._original_width}x{self._original_height})")  
+        
+    def _schedule_window_restoration(self):
+        """Schedule multiple restoration attempts with increasing delays"""
+        # Try multiple times with increasing delays to ensure it works
+        for delay in [100, 300, 700]:
+            self.root.after(delay, self._restore_window_state)
+            
+    def _restore_window_state(self):
+        """Restore the original window state"""
+        # Force exact geometry
+        self.root.geometry(self._original_geometry)
+        
+        # Double-check specific dimensions
+        current_width = self.root.winfo_width()
+        current_height = self.root.winfo_height()
+        
+        if current_width != self._original_width or current_height != self._original_height:
+            print(f"Window size mismatch, forcing exact dimensions: {self._original_width}x{self._original_height}")
+            # Try explicit resizing if geometry wasn't enough
+            self.root.geometry(f"{self._original_width}x{self._original_height}+{self._original_x}+{self._original_y}")
+            
+            # Update root to process geometry changes
+            self.root.update_idletasks()
     
     def close_bdf_signal_monitor(self):
         """Close the BDF signal monitor window"""
@@ -904,15 +943,6 @@ class ACErecorder:
                     print("Electrode monitoring started")
                 except Exception as e:
                     print(f"Error initializing electrode monitor: {e}")
-                    traceback.print_exc()
-            
-            # Initialize BDF signal monitor if enabled
-            if self.monitor_bdf_signal.get():
-                try:
-                    self.initialize_bdf_signal_monitor()
-                    print("BDF signal monitor started")
-                except Exception as e:
-                    print(f"Error initializing BDF signal monitor: {e}")
                     traceback.print_exc()
             
             # Initialize BDF signal monitor if enabled

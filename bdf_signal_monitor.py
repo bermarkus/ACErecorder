@@ -14,7 +14,9 @@ from eeg_signal_processor import EEGSignalProcessor
 from eeg_settings_menu import EEGSettingsMenu
 
 class BDFSignalMonitor:
-    def __init__(self, parent=None):
+    """A real-time monitoring tool for BDF EEG recordings"""
+    
+    def __init__(self, parent=None, window_length=10, update_interval=100, live_update=True, signal_processor=None):
         """Initialize the BDF signal monitor window"""
         # Don't store parent reference to avoid any connection between windows
         self.parent = None
@@ -23,13 +25,22 @@ class BDFSignalMonitor:
         self.plots = []
         self.channel_labels = []
         self.update_interval = 1000  # 1Hz update rate in milliseconds
-        self.window_length = 10  # 10 seconds of data
-        self.fullscreen_mode = False
+        self.window_length = window_length  # For locking during updates
+        self.lock = threading.RLock()
+        
+        # Signal processor for filtering and re-referencing
+        if signal_processor is None:
+            self.signal_processor = EEGSignalProcessor()
+        else:
+            self.signal_processor = signal_processor
+        
+        # For storing data (10s window by default)
+        self.window_length = window_length
+        self.data_queue = []
         
         # Threading and monitoring control
         self.monitor_thread = None
         self.stop_flag = threading.Event()
-        self.data_queue = queue.Queue()
         
         # BDF file tracking
         self.current_bdf_file = None
@@ -43,9 +54,6 @@ class BDFSignalMonitor:
         self.y_scale = 1.0  # Global scaling factor
         self.auto_scale = True  # Enable auto-scaling based on data
         self.per_channel_scale = True  # Scale each channel individually
-        
-        # Initialize signal processor
-        self.signal_processor = EEGSignalProcessor()
         
         # Create settings menu (initially hidden)
         self.settings_menu = None
@@ -251,11 +259,12 @@ class BDFSignalMonitor:
         """Initialize the settings menu"""
         if self.settings_menu is None:
             try:
-                # Create the settings menu as a separate window
-                self.settings_menu = EEGSettingsMenu(self.signal_processor)
+                # Create the settings menu as a separate window with reference to this monitor
+                self.settings_menu = EEGSettingsMenu(self.signal_processor, bdf_monitor=self)
                 
                 # Connect signals
                 self.settings_menu.settingsChanged.connect(self.update_title)
+                self.settings_menu.settingsChanged.connect(self.update_channel_labels)
                 
                 print("Settings menu initialized successfully")
             except Exception as e:
@@ -277,8 +286,6 @@ class BDFSignalMonitor:
             self.settings_menu.show()
             self.settings_menu.raise_()
         
-
-    
 
             
 
@@ -363,11 +370,7 @@ class BDFSignalMonitor:
             self.update_timer.stop()
         
         # Clear the data queue
-        while not self.data_queue.empty():
-            try:
-                self.data_queue.get_nowait()
-            except:
-                pass
+        self.data_queue.clear()
                 
         # Wait for thread to terminate
         if self.monitor_thread and self.monitor_thread.is_alive():
@@ -424,9 +427,17 @@ class BDFSignalMonitor:
                                 
                             # Always update channel information from the BDF file
                             self.num_channels = len(raw.ch_names)
-                            self.channel_labels = raw.ch_names
+                            self.original_channel_labels = raw.ch_names.copy()
+                            
+                            # Get display labels based on reference mode
+                            if self.signal_processor:
+                                self.channel_labels = self.signal_processor.get_channel_display_labels(self.original_channel_labels)
+                            else:
+                                self.channel_labels = self.original_channel_labels
+                                
                             print(f"Channel labels from BDF: {self.channel_labels}")
                             
+
                             # Create channel offsets - REVERSED so first channel appears at the TOP
                             base_offset = 2.0
                             channel_spacing = base_offset * (2 if self.num_channels <= 30 else 1.5)
@@ -450,16 +461,15 @@ class BDFSignalMonitor:
                                     self.y_scale = suggested_scale
                                     print(f"Auto-adjusted y_scale to {self.y_scale:.8f} based on data range {data_range:.8f}")
                             
-                            # Put the data in the queue for the UI thread to consume
-                            # Clear queue first to avoid backlog
-                            while not self.data_queue.empty():
-                                try:
-                                    self.data_queue.get_nowait()
-                                except:
-                                    pass
-                                    
-                            self.data_queue.put((data, times, raw.info['sfreq']))
-                            print("Data successfully added to queue")
+                            # Put the data in the queue/list for the UI thread to consume
+                            # Limit queue size to avoid backlog
+                            if len(self.data_queue) > 5:
+                                # Keep only the most recent items
+                                self.data_queue = self.data_queue[-5:]
+                            
+                            # Add new data to the list
+                            self.data_queue.append((data, times, raw.info['sfreq']))
+                            print("Data successfully added to queue, current size:", len(self.data_queue))
                             
                         except ValueError as e:
                             if "slice indices" in str(e):
@@ -472,7 +482,8 @@ class BDFSignalMonitor:
                                     data, times = raw[:, -samples_to_read:]
                                     
                                 print(f"Using alternative method: retrieved {samples_to_read} samples")
-                                self.data_queue.put((data, times, raw.info['sfreq']))
+                                self.data_queue.append((data, times, raw.info['sfreq']))
+                                print("Data successfully added to queue, current size:", len(self.data_queue))
                             else:
                                 raise e
                         
@@ -486,40 +497,70 @@ class BDFSignalMonitor:
                 print(f"Error in monitoring thread: {e}")
                 time.sleep(1.0)
     
-    def update_plot(self):
-        """Update the signal plot with new data from the queue"""
-        if self.window is None:
-            print("Window doesn't exist, exiting update_plot")
+    def update_channel_labels(self):
+        """Update channel labels based on current reference mode"""
+        if hasattr(self, 'original_channel_labels') and self.original_channel_labels:
+            if self.signal_processor:
+                self.channel_labels = self.signal_processor.get_channel_display_labels(self.original_channel_labels)
+            else:
+                self.channel_labels = self.original_channel_labels
+                
+            # Force a redraw of the plot to show updated labels
+            if hasattr(self, 'data') and self.data is not None:
+                self.update_plot(force_labels=True)
+    
+    def update_plot(self, force_labels=False):
+        """Update the visual display of the monitor"""
+        # Skip update if no data available and not forcing label update
+        if len(self.data_queue) == 0 and not force_labels:
             return
             
         try:
-            print(f"Checking data queue (empty={self.data_queue.empty()})")
+            print(f"Checking data queue (items: {len(self.data_queue)})")
             # Get the latest data from the queue
-            if not self.data_queue.empty():
+            if len(self.data_queue) > 0:
                 try:
-                    data, times, sfreq = self.data_queue.get_nowait()
+                    # Get the latest item but keep it in the queue
+                    data, times, sfreq = self.data_queue[-1]
                     print(f"Updating plot with data shape: {data.shape}, time points: {len(times)}")
                     
                     # Update signal processor sample rate
                     self.signal_processor.set_sample_rate(sfreq)
                     
                 except Exception as e:
-                    print(f"Error getting data from queue: {e}")
+                    print(f"Error accessing data from queue: {e}")
                     return
                 
                 if data.shape[1] < 2:
                     print("Not enough data points to plot yet")
                     return
                     
-                # Apply signal processing if enabled
-                if self.signal_processor.bandpass_enabled:
+                # Apply signal processing if any processing is enabled
+                if (self.signal_processor.bandpass_enabled or 
+                    self.signal_processor.notch_enabled or
+                    self.signal_processor.reference_mode != 'original'):
                     try:
-                        # Apply bandpass filter
-                        print(f"Applying bandpass filter: {self.signal_processor.bandpass_low}-{self.signal_processor.bandpass_high} Hz")
-                        data = self.signal_processor.process(data, self.channel_labels)
-                        print(f"Filtered data shape: {data.shape}")
+                        # Get processing info for debug message
+                        processing_info = []
+                        if self.signal_processor.bandpass_enabled:
+                            processing_info.append(f"bandpass {self.signal_processor.bandpass_low}-{self.signal_processor.bandpass_high} Hz")
+                        if self.signal_processor.notch_enabled:
+                            processing_info.append(f"notch {self.signal_processor.notch_freq} Hz")
+                        if self.signal_processor.reference_mode != 'original':
+                            processing_info.append(f"{self.signal_processor.reference_mode} reference")
+                            
+                        # Apply all enabled processing
+                        print(f"Applying signal processing: {', '.join(processing_info)}")
+                        
+                        # We must pass the original channel names, not the display labels with -LE suffix
+                        if hasattr(self, 'original_channel_labels'):
+                            data = self.signal_processor.process(data, self.original_channel_labels)
+                        else:
+                            data = self.signal_processor.process(data, self.channel_labels)
+                            
+                        print(f"Processed data shape: {data.shape}")
                     except Exception as e:
-                        print(f"Error applying filter: {e}")
+                        print(f"Error applying signal processing: {e}")
                 
                 # Clear previous plots
                 self.plot_widget.clear()
@@ -670,18 +711,17 @@ class BDFSignalMonitor:
                         # For fewer channels, show all labels
                         label_indices = list(range(self.num_channels))
                     
-                    # Add text items for labels on both left and right sides
+                    # Add text items for labels on left side only
                     # Define label colors and styles - use same yellow as the signal lines
                     label_color = '#ffff00'  # Yellow to match the signal lines
                     background_color = (50, 50, 50, 200)  # Dark gray with opacity (R,G,B,A)
                     
-                    # Position labels right at the edges of the display
+                    # Position labels at the left edge of the display
                     left_edge = start_time + 0.01  # Very close to left edge (1% of window)
-                    right_edge = end_time - 0.01  # Very close to right edge
                     
                     for i in label_indices:
                         if i < data.shape[0]:
-                            # Create left side label
+                            # Create left side label only
                             left_label = pg.TextItem(
                                 text=self.channel_labels[i],
                                 color=label_color,
@@ -691,17 +731,6 @@ class BDFSignalMonitor:
                             left_label.isChannelLabel = True  # Custom attribute to identify these items
                             left_label.setPos(left_edge, self.channel_offsets[i])
                             self.plot_widget.addItem(left_label)
-                            
-                            # Create right side label
-                            right_label = pg.TextItem(
-                                text=self.channel_labels[i],
-                                color=label_color,
-                                anchor=(1, 0.5),  # Right-aligned, vertically centered
-                                fill=background_color  # Add opaque background
-                            )
-                            right_label.isChannelLabel = True
-                            right_label.setPos(right_edge, self.channel_offsets[i])
-                            self.plot_widget.addItem(right_label)
                 
                 # Update title with current info and scaling mode
                 title = "EEG Signal Monitor"
@@ -724,7 +753,7 @@ class BDFSignalMonitor:
         # Always reschedule the next update with appropriate interval
         if hasattr(self, 'update_timer'):
             # Adjust update interval based on whether we have data
-            if self.data_queue.empty() and self.num_channels == 0:
+            if len(self.data_queue) == 0 and self.num_channels == 0:
                 # Use shorter interval if we haven't received any data yet
                 self.update_timer.setInterval(200)  # Try more frequently until we get data
             else:

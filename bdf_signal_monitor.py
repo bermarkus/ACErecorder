@@ -3,15 +3,20 @@ import time
 import threading
 import numpy as np
 import queue
+from datetime import datetime
+
 from PyQt5 import QtWidgets, QtCore, QtGui
 from PyQt5.QtCore import Qt
 import pyqtgraph as pg
-import mne
+
+import pyedflib
 from mne.io import read_raw_bdf
+import mne
 
 # Import the signal processor and settings menu
 from eeg_signal_processor import EEGSignalProcessor
 from eeg_settings_menu import EEGSettingsMenu
+from annotations_menu import AnnotationsMenu
 
 class BDFSignalMonitor:
     """A real-time monitoring tool for BDF EEG recordings"""
@@ -52,13 +57,19 @@ class BDFSignalMonitor:
         self.channel_offsets = []  # For stacking channels vertically
         self.channel_scales = []   # Individual scaling for each channel
         self.channel_spacing_multipliers = []  # Multipliers for vertical spacing (default 1.0)
-        self.y_scale = 30.0  # Default scale in µV (30µV is default)
-        self.auto_scale = False  # Default to fixed scaling (not auto-scaling)
+        self.y_scale = 30.0  # Scale value when not in auto mode
+        self.auto_scale = True   # Default to auto-scaling for 2-channel headset
         self._auto_scale_value = 1.0  # Separate value for auto-scaling tracking
         self.per_channel_scale = True  # Scale each channel individually
         
-        # Create settings menu (initially hidden)
+        # Fixed scale channels
+        self.fixed_scale_channels = {
+            'Coherence': 1.0  # Coherence channel has a fixed 0-1 µV scale
+        }
+        
+        # Create menus (initially hidden)
         self.settings_menu = None
+        self.annotations_menu = None
         
         # Make sure the application exists - create new instance to isolate from Tkinter
         # Get existing instance but don't use it to avoid Tkinter interaction
@@ -78,10 +89,9 @@ class BDFSignalMonitor:
             self.window.setWindowTitle("BDF Signal Monitor")
             self.window.setGeometry(100, 100, 1200, 800)  # Default size
             
-            # Set window to stay on top
+            # Standard window
             self.window.setWindowFlags(
-                QtCore.Qt.Window | 
-                QtCore.Qt.WindowStaysOnTopHint
+                QtCore.Qt.Window
             )
             
             # Apply stylesheet to minimize borders in the application
@@ -217,7 +227,7 @@ class BDFSignalMonitor:
             self.plot_widget.viewport().setStyleSheet("border: 0px; padding: 0px; margin: 0px;")
             
             # Add a settings button in the top-left corner
-            self.settings_button = QtWidgets.QPushButton("⚙", self.window)
+            self.settings_button = QtWidgets.QPushButton("📈", self.window)  # Chart increasing icon
             self.settings_button.setStyleSheet(
                 "QPushButton {background-color: rgba(60, 60, 60, 150); color: white; " +
                 "border: none; border-radius: 30px; font-size: 32px; padding: 5px;}" +
@@ -227,8 +237,20 @@ class BDFSignalMonitor:
             self.settings_button.setToolTip("Open Signal Processing Settings")
             self.settings_button.clicked.connect(self.toggle_settings_menu)
             
+            # Add an annotations button next to the settings button
+            self.annotations_button = QtWidgets.QPushButton("✏️", self.window)  # Pencil emoji
+            self.annotations_button.setStyleSheet(
+                "QPushButton {background-color: rgba(60, 60, 60, 150); color: white; " +
+                "border: none; border-radius: 30px; font-size: 32px; padding: 5px;}" +
+                "QPushButton:hover {background-color: rgba(80, 80, 80, 200);}"
+            )
+            self.annotations_button.setFixedSize(60, 60)  # Same size as settings button
+            self.annotations_button.setToolTip("Open Annotations Menu")
+            self.annotations_button.clicked.connect(self.toggle_annotations_menu)
+            
             # Position will be set after window is shown
             self.settings_button.hide()
+            self.annotations_button.hide()
             
             # Handle close event - redirect to minimize
             self.window.closeEvent = self.handle_close_event
@@ -272,13 +294,18 @@ class BDFSignalMonitor:
             self.window.raise_()
             self.window.activateWindow()
             
-            # Initialize the settings menu
+            # Initialize the menus
             self.init_settings_menu()
+            self.init_annotations_menu()
             
-            # Position the settings button in the top-left corner
-            def position_button():
+            # Position the buttons in the top-left corner
+            def position_buttons():
                 # Position in top-left with padding
                 padding = 15
+                button_width = 60
+                button_spacing = 10
+                
+                # Position settings button first
                 self.settings_button.move(
                     padding,
                     padding
@@ -286,8 +313,16 @@ class BDFSignalMonitor:
                 self.settings_button.show()
                 self.settings_button.raise_()
                 
+                # Position annotations button to the right of settings button
+                self.annotations_button.move(
+                    padding + button_width + button_spacing,
+                    padding
+                )
+                self.annotations_button.show()
+                self.annotations_button.raise_()
+                
             # Delay to ensure window is fully shown
-            QtCore.QTimer.singleShot(500, position_button)
+            QtCore.QTimer.singleShot(500, position_buttons)
             
             print("BDF Signal Monitor now displayed in maximized mode")
 
@@ -314,13 +349,40 @@ class BDFSignalMonitor:
         if self.settings_menu.isVisible():
             self.settings_menu.hide()
         else:
-            # Position to the right of the button
+            # Position below the settings button
             button_pos = self.settings_button.mapToGlobal(QtCore.QPoint(0, 0))
-            x = button_pos.x() + self.settings_button.width() + 5  # Position to the right
-            y = button_pos.y()  # Same vertical position as the button
+            x = button_pos.x()  # Same horizontal position as the button
+            y = button_pos.y() + self.settings_button.height() + 5  # Position below
             self.settings_menu.move(x, y)
             self.settings_menu.show()
             self.settings_menu.raise_()
+    
+    def init_annotations_menu(self):
+        """Initialize the annotations menu"""
+        if self.annotations_menu is None:
+            try:
+                # Create the annotations menu as a separate window with reference to this monitor
+                self.annotations_menu = AnnotationsMenu(bdf_monitor=self)
+                
+                print("Annotations menu initialized successfully")
+            except Exception as e:
+                print(f"Error initializing annotations menu: {e}")
+    
+    def toggle_annotations_menu(self):
+        """Toggle visibility of the annotations menu"""
+        if self.annotations_menu is None:
+            self.init_annotations_menu()
+            
+        if self.annotations_menu.isVisible():
+            self.annotations_menu.hide()
+        else:
+            # Position below the annotations button
+            button_pos = self.annotations_button.mapToGlobal(QtCore.QPoint(0, 0))
+            x = button_pos.x()  # Same horizontal position as the button
+            y = button_pos.y() + self.annotations_button.height() + 5  # Position below
+            self.annotations_menu.move(x, y)
+            self.annotations_menu.show()
+            self.annotations_menu.raise_()
         
 
             
@@ -339,7 +401,7 @@ class BDFSignalMonitor:
         if self.signal_processor.bandpass_enabled:
             filter_info.append(f"BP: {self.signal_processor.bandpass_low}-{self.signal_processor.bandpass_high}Hz")
         if self.signal_processor.notch_enabled:
-            filter_info.append(f"Notch: {self.signal_processor.notch_freq}Hz")
+            filter_info.append(f"Notch: {', '.join(map(str, self.signal_processor.notch_freqs))}Hz")
         if self.signal_processor.reference_mode != 'original':
             filter_info.append(f"Ref: {self.signal_processor.reference_mode}")
             
@@ -377,6 +439,9 @@ class BDFSignalMonitor:
         self.current_bdf_file = bdf_file_path
         self.last_file_size = 0
         self.last_check_time = time.time()
+        
+        # Reset data queue
+        self.data_queue = []
         
         # Initial placeholder data
         self._setup_initial_display()
@@ -651,7 +716,7 @@ class BDFSignalMonitor:
                         if self.signal_processor.bandpass_enabled:
                             processing_info.append(f"bandpass {self.signal_processor.bandpass_low}-{self.signal_processor.bandpass_high} Hz")
                         if self.signal_processor.notch_enabled:
-                            processing_info.append(f"notch {self.signal_processor.notch_freq} Hz")
+                            processing_info.append(f"notch {', '.join(map(str, self.signal_processor.notch_freqs))} Hz")
                         if self.signal_processor.reference_mode != 'original':
                             processing_info.append(f"{self.signal_processor.reference_mode} reference")
                             
@@ -727,25 +792,39 @@ class BDFSignalMonitor:
                 else:
                     spacing_multiplier = 1.0
                 
+                # Handle scaling based on auto vs. fixed mode
                 if self.auto_scale:
                     # Auto scaling: adapt to data amplitude
-                    if max_amp > 0:
-                        # Use 80% of available channel space
-                        scale_factor = 0.8 / max_amp
-                        print(f"Auto scaling with factor: {scale_factor:.8f} for max_amp: {max_amp:.8f}")
+                    # BDF files store data in microvolts (µV), not millivolts (mV)
+                    # This is confirmed in ACErecorder.py where dimension is set to 'uV'
+                    
+                    # Calculate max amplitude across all channels
+                    max_amplitude = np.max(np.abs(data))
+                    
+                    if max_amplitude > 0:
+                        # Calculate Y-scale based on max amplitude with 20% headroom
+                        self._auto_scale_value = max_amplitude * 1.2
+                        
+                        # Scale factor converts from data value to display height
+                        # For a signal of max_amplitude to display at 80% of channel height
+                        scale_factor = 0.8 / self._auto_scale_value
+                        
+                        print(f"Auto scaling with factor: {scale_factor:.8f} based on max amplitude: {max_amplitude:.4f} µV")
+                        print(f"Expected signal height (normalized): {max_amplitude * scale_factor:.4f}")
                     else:
                         # Default scale if no amplitude
                         scale_factor = 0.01
                 else:
                     # Fixed scale mode: use the selected µV value
-                    # If data is in millivolts but scale is in microvolts, we need to adjust
-                    # For example: 30µV scale, data point of 0.03mV = 30µV should be 1.0 unit high
-                    # So we multiply by conversion_factor and then divide by scale value
-                    scale_factor = conversion_factor / self.y_scale
-                    print(f"Fixed scaling at {self.y_scale} µV with factor: {scale_factor:.8f} (data in mV)")
+                    # Data is already in microvolts (µV), so we simply need to scale
+                    # to make a signal of y_scale µV display at 80% of channel height
+                    scale_factor = 0.8 / self.y_scale
+                    
+                    print(f"Fixed scaling at {self.y_scale} µV with factor: {scale_factor:.8f} (data in µV)")
+                    print(f"A {self.y_scale} µV signal should render at height: {self.y_scale * scale_factor:.4f}")
                     
                     # Ensure scale factor isn't too small to see anything
-                    if scale_factor < 1.0:
+                    if scale_factor * 100 < 0.1:  # If even a 100µV signal would be less than 0.1 height
                         print("Warning: Scale factor may be too small - signals might appear flat")
                 
                 # Use a fixed, consistent channel spacing approach
@@ -788,14 +867,49 @@ class BDFSignalMonitor:
                 
                 # Calculate individual channel scales ONLY IF in auto-scale mode AND per-channel scaling enabled
                 if self.auto_scale and self.per_channel_scale:
+                    # First determine if Fp1/Fp2 channels exist and their indices
+                    fp_indices = []
+                    for i in range(min(len(self.channel_labels), data.shape[0])):
+                        if self.channel_labels[i].startswith('Fp'):
+                            fp_indices.append(i)
+                    
+                    # Calculate max amplitude across Fp channels specifically
+                    fp_max_amp = 1.0  # Default minimum
+                    if fp_indices:
+                        fp_data = data[fp_indices, :]
+                        fp_max_amp = np.max(np.abs(fp_data))
+                        # Use actual amplitude for scaling - do not artificially limit
+                        print(f"Found Fp channels with max amplitude: {fp_max_amp:.2f}μV")
+                    
+                    # Process each channel
                     for i in range(data.shape[0]):
-                        # Get amplitude of this channel
-                        channel_max = np.max(np.abs(data[i]))
-                        if channel_max > 0:
-                            # Aim for a normalized height of 0.8 units per channel
-                            target_scale = 0.8 / channel_max
-                            # Smooth the scale change to avoid abrupt changes
-                            self.channel_scales[i] = self.channel_scales[i] * 0.7 + target_scale * 0.3
+                        # Get channel name for logging
+                        channel_name = self.channel_labels[i] if i < len(self.channel_labels) else f"Channel {i}"
+                        
+                        # Special handling for Fp1/Fp2 channels
+                        if channel_name.startswith('Fp'):
+                            # For Fp channels, use the maximum amplitude across both Fp channels
+                            # This ensures both channels use the same scale
+                            target_scale = 0.7 / fp_max_amp
+                            
+                            # No smoothing for initial scaling to ensure immediate visibility
+                            if self.channel_scales[i] < 0.1:  # If scale is very small (initial or reset)
+                                self.channel_scales[i] = target_scale
+                            else:
+                                # Use gentler smoothing (80% old, 20% new) to maintain stability
+                                self.channel_scales[i] = self.channel_scales[i] * 0.8 + target_scale * 0.2
+                                
+                            print(f"Auto-scaling {channel_name}: fp_max={fp_max_amp:.2f}μV, scale={self.channel_scales[i]:.5f}, height~{fp_max_amp * self.channel_scales[i]:.2f}")
+                        else:
+                            # Standard channels - process normally
+                            channel_max = np.max(np.abs(data[i]))
+                            
+                            if channel_max > 0:
+                                # Target 70% of channel height for standard channels
+                                target_scale = 0.7 / channel_max
+                                # Smooth the scale change (70% old, 30% new)
+                                self.channel_scales[i] = self.channel_scales[i] * 0.7 + target_scale * 0.3
+                                print(f"Auto-scaling {channel_name}: max={channel_max:.2f}μV, scale={self.channel_scales[i]:.5f}, height~{channel_max * self.channel_scales[i]:.2f}")
                 elif not self.auto_scale:
                     # In fixed scale mode, ensure all channels use the same fixed scale
                     for i in range(data.shape[0]):
@@ -892,6 +1006,14 @@ class BDFSignalMonitor:
                         )
                         self.plot_widget.addItem(grid_line)
                         
+                        # Create horizontal line
+                        grid_line = pg.InfiniteLine(
+                            pos=pos,
+                            angle=0,
+                            pen=boundary_pen
+                        )
+                        self.plot_widget.addItem(grid_line)
+                    
                     # Update ticks
                     self.plot_widget.getAxis('bottom').setTicks([x_ticks])
                     
@@ -936,9 +1058,32 @@ class BDFSignalMonitor:
                         if self.channel_labels[i] in reference_channels_to_skip:
                             print(f"Skipping channel {self.channel_labels[i]} (used as reference)")
                             continue
-                        # Apply individual channel scaling if enabled
-                        if self.per_channel_scale:
+                        # Check if this is a channel with a fixed scale requirement
+                        channel_name = self.channel_labels[i]
+                        
+                        if 'Coherence' in channel_name and hasattr(self, 'fixed_scale_channels'):
+                            # Going back to proven working scale for Coherence
+                            channel_scale = 1000000.0  # This was the working value before
+                            print(f"Using fixed scale for {channel_name}: 0-1 range with 1000000.0 amplification")
+                        # Apply fixed scales for standard EEG channels
+                        elif not self.auto_scale:
+                            # Use the exact same direct scaling approach we established above
+                            # The data is in µV, and we want a signal of y_scale µV
+                            # to display at 80% of the channel height
+                            
+                            # For consistent scaling across the application:
+                            # scale_factor = 0.8 / y_scale
+                            
+                            # Direct calculation based on selected scale
+                            channel_scale = 0.8 / self.y_scale
+                            
+                            print(f"Using fixed scale for {channel_name}: {self.y_scale} µV range with amplification {channel_scale:.1f}x")
+                        # Otherwise apply auto scaling if enabled
+                        elif self.per_channel_scale:
+                            # Ensure we're using the per-channel scale
                             channel_scale = self.channel_scales[i]
+                            if channel_name.startswith('Fp'):
+                                print(f"Using auto scale for {channel_name}: scale={channel_scale:.5f}")
                         else:
                             channel_scale = scale_factor
                             
@@ -952,20 +1097,129 @@ class BDFSignalMonitor:
                         # by setting them to NaN (Not a Number), which PyQtGraph will interpret as a break in the line
                         clipped_data = scaled_data.copy()
                         
-                        # Create mask for out-of-bounds values (both above and below limits)
-                        out_of_bounds_mask = (clipped_data > clip_limit) | (clipped_data < -clip_limit)
-                        
-                        # Replace out-of-bounds values with NaN to make them invisible
-                        clipped_data[out_of_bounds_mask] = np.nan
+                        # Only apply clipping for non-Coherence channels
+                        if 'Coherence' not in channel_name:
+                            # Create mask for out-of-bounds values (both above and below limits)
+                            out_of_bounds_mask = (clipped_data > clip_limit) | (clipped_data < -clip_limit)
+                            
+                            # Replace out-of-bounds values with NaN to make them invisible
+                            clipped_data[out_of_bounds_mask] = np.nan
+                        else:
+                            # For Coherence channel, don't clip - ensure all values are visible
+                            # Instead, constrain values to stay within display bounds
+                            # This prevents the signal from disappearing when reaching extremes
+                            clipped_data = np.clip(clipped_data, -clip_limit * 0.99, clip_limit * 0.99)
+                            print(f"Ensuring Coherence channel is always visible (not clipped)")
+                            
+                            # Coherence values are always positive and in the 0.0-1.0 range
+                            # By clipping to 0.99 of the boundary, we ensure they're always visible
+                            # while staying inside the grey boundary box
                         
                         # Plot the clipped data with vertical offset for stacking channels
-                        plot = self.plot_widget.plot(
-                            times, 
-                            clipped_data + self.channel_offsets[i],  # Apply channel offset
-                            pen=yellow_pen,
-                            name=self.channel_labels[i]
-                        )
+                        # Use thicker pen line for Coherence channel only
+                        if 'Coherence' in channel_name:
+                            # Thicker yellow pen for Coherence (3px instead of 1px)
+                            coherence_pen = pg.mkPen(color='#ffff00', width=3)
+                            plot = self.plot_widget.plot(
+                                times, 
+                                clipped_data + self.channel_offsets[i],  # Apply channel offset
+                                pen=coherence_pen,
+                                name=self.channel_labels[i]
+                            )
+                        else:
+                            # Standard thickness for all other channels (1px)
+                            plot = self.plot_widget.plot(
+                                times, 
+                                clipped_data + self.channel_offsets[i],  # Apply channel offset
+                                pen=yellow_pen,
+                                name=self.channel_labels[i]
+                            )
                         self.plots.append(plot)
+                        
+                        # Add y-axis scale markings for this channel
+                        if not self.channel_labels[i] in reference_channels_to_skip:  # Don't add scales for skipped channels
+                            scale_color = '#AAAAAA'  # Light grey for scale markings
+                            label_style = {'color': scale_color, 'font-size': '8pt'}
+                            
+                            # Determine channel min/max values in microvolts
+                            if 'Coherence' in self.channel_labels[i]:
+                                # Special case for Coherence - always 0 to 1.0
+                                min_val = 0.0
+                                max_val = 1.0
+                            elif self.auto_scale:
+                                # For auto-scale, use the actual data amplitude
+                                max_amp = np.max(np.abs(data[i])) * 1000  # Convert to µV
+                                min_val = -max_amp
+                                max_val = max_amp
+                            else:
+                                # For fixed scale, use the y_scale setting
+                                min_val = -self.y_scale
+                                max_val = self.y_scale
+                            
+                            mid_val = (min_val + max_val) / 2.0
+                            
+                            # Calculate positions for scale markings
+                            min_pos = self.channel_offsets[i] - clip_limit
+                            mid_pos = self.channel_offsets[i]
+                            max_pos = self.channel_offsets[i] + clip_limit
+                            
+                            # Add text labels on the left edge
+                            left_edge = times[0] - (0.01 * self.window_length)  # Slightly left of data
+                            
+                            # Add min value label
+                            min_text = pg.TextItem(
+                                text=f"{min_val:.1f}", 
+                                color=scale_color,
+                                anchor=(1.0, 0.5)  # Right-aligned
+                            )
+                            min_text.setPos(left_edge, min_pos)
+                            min_text.setParentItem(self.plot_widget.getPlotItem())
+                            
+                            # Add mid value label
+                            mid_text = pg.TextItem(
+                                text=f"{mid_val:.1f}", 
+                                color=scale_color,
+                                anchor=(1.0, 0.5)  # Right-aligned
+                            )
+                            mid_text.setPos(left_edge, mid_pos)
+                            mid_text.setParentItem(self.plot_widget.getPlotItem())
+                            
+                            # Add max value label
+                            max_text = pg.TextItem(
+                                text=f"{max_val:.1f}", 
+                                color=scale_color,
+                                anchor=(1.0, 0.5)  # Right-aligned
+                            )
+                            max_text.setPos(left_edge, max_pos)
+                            max_text.setParentItem(self.plot_widget.getPlotItem())
+                        
+                        # Add special bounding box for Coherence channel
+                        if 'Coherence' in channel_name:
+                            # Create grey pen with 2px width for bounding box
+                            grey_pen = pg.mkPen(color='#808080', width=2)
+                            
+                            # Add upper bound line (representing 1.0 value - exact value)
+                            # Set to exactly 1.0 as requested
+                            upper_bound = self.channel_offsets[i] + clip_limit
+                            upper_line = pg.InfiniteLine(
+                                pos=upper_bound,
+                                angle=0,
+                                pen=grey_pen
+                                # No label
+                            )
+                            self.plot_widget.addItem(upper_line)
+                            
+                            # Add lower bound line (representing 0.0 value)
+                            lower_bound = self.channel_offsets[i] - clip_limit
+                            lower_line = pg.InfiniteLine(
+                                pos=lower_bound,
+                                angle=0,
+                                pen=grey_pen
+                                # No label
+                            )
+                            self.plot_widget.addItem(lower_line)
+                            
+                            print(f"Added bounding box for Coherence channel at offset {self.channel_offsets[i]:.2f} with upper limit {clip_limit:.2f} (1.0) and lower limit -{clip_limit:.2f} (0.0)")
                     
                     # Add channel labels as text items on the right side
                     # Determine which channels to show labels for
@@ -977,13 +1231,15 @@ class BDFSignalMonitor:
                         # For fewer channels, show all labels
                         label_indices = list(range(self.num_channels))
                     
-                    # Add text items for labels on left side only
-                    # Define label colors and styles - use same yellow as the signal lines
+                    # Add channel labels and scale markings on the left edge
+                    # Define colors and styles
                     label_color = '#ffff00'  # Yellow to match the signal lines
+                    scale_color = '#FFFFFF'  # White for scale markings - more visible
                     background_color = (50, 50, 50, 200)  # Dark gray with opacity (R,G,B,A)
                     
-                    # Position labels at the left edge of the display
+                    # Position labels and scales at the left edge of the display
                     left_edge = start_time + 0.01  # Very close to left edge (1% of window)
+                    scales_edge = start_time + 0.01  # Same position as channel labels for now
                     
                     for i in label_indices:
                         if i < data.shape[0]:
@@ -998,13 +1254,65 @@ class BDFSignalMonitor:
                                 anchor=(0, 0.5),  # Left-aligned, vertically centered
                                 fill=background_color  # Add opaque background
                             )
-                            left_label.isChannelLabel = True  # Custom attribute to identify these items
+                            left_label.isChannelLabel = True  # Custom attribute
                             left_label.setPos(left_edge, self.channel_offsets[i])
                             self.plot_widget.addItem(left_label)
-                
-                # Title has been removed as requested
-                # Set an empty title to remove the header space completely
-                self.plot_widget.setTitle("")
+                            
+                            # Add scale markings for this channel
+                            # Calculate min/max/mid values in microvolts
+                            if 'Coherence' in self.channel_labels[i]:
+                                # Special case for Coherence - always 0 to 1
+                                min_val = 0.0
+                                max_val = 1.0
+                            elif self.auto_scale and i < data.shape[0]:
+                                # For auto-scale, use actual data amplitude
+                                max_amp = np.max(np.abs(data[i])) * 1000  # mV to µV
+                                min_val = -max_amp
+                                max_val = max_amp
+                            else:
+                                # Fixed scale using y_scale setting
+                                min_val = -self.y_scale
+                                max_val = self.y_scale
+                                
+                            # Calculate middle value
+                            mid_val = (min_val + max_val) / 2.0
+                            
+                            # Calculate positions for scale markings
+                            clip_limit_for_channel = channel_spacing * self.channel_max_amp / 2.0
+                            min_pos = self.channel_offsets[i] - clip_limit_for_channel
+                            mid_pos = self.channel_offsets[i]
+                            max_pos = self.channel_offsets[i] + clip_limit_for_channel
+                            
+                            # Add min value label with background for visibility
+                            min_label = pg.TextItem(
+                                text=f"{min_val:.1f}",
+                                color=scale_color,
+                                anchor=(0, 0.5),  # Left-aligned
+                                fill=(40, 40, 40, 200)  # Dark background with opacity
+                            )
+                            # Position to the right of channel label
+                            min_label.setPos(left_edge + 0.15, min_pos)
+                            self.plot_widget.addItem(min_label)
+                            
+                            # Add mid value label with background
+                            mid_label = pg.TextItem(
+                                text=f"{mid_val:.1f}",
+                                color=scale_color,
+                                anchor=(0, 0.5),  # Left-aligned
+                                fill=(40, 40, 40, 200)  # Dark background with opacity
+                            )
+                            mid_label.setPos(left_edge + 0.15, mid_pos) 
+                            self.plot_widget.addItem(mid_label)
+                            
+                            # Add max value label with background
+                            max_label = pg.TextItem(
+                                text=f"{max_val:.1f}", 
+                                color=scale_color,
+                                anchor=(0, 0.5),  # Left-aligned
+                                fill=(40, 40, 40, 200)  # Dark background with opacity
+                            )
+                            max_label.setPos(left_edge + 0.15, max_pos)
+                            self.plot_widget.addItem(max_label)
                 
                 # Grid lines are added explicitly as InfiniteLines
                 

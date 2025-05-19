@@ -152,32 +152,41 @@ class EEGSettingsMenu(QtWidgets.QWidget):
         self.notch_checkbox.toggled.connect(self.toggle_notch_filter)
         notch_layout.addWidget(self.notch_checkbox)
         
-        # Frequency control
-        notch_freq_layout = QtWidgets.QHBoxLayout()
-        notch_freq_layout.addWidget(QtWidgets.QLabel("Frequency:"))
+        # Checkboxes for common notch frequencies
+        notch_freq_layout = QtWidgets.QGridLayout()
+        notch_freq_layout.addWidget(QtWidgets.QLabel("Frequencies:"), 0, 0)
         
-        self.notch_freq = QtWidgets.QDoubleSpinBox()
-        self.notch_freq.setRange(1.0, 200.0)
-        self.notch_freq.setValue(self.signal_processor.notch_freq)
-        self.notch_freq.setSingleStep(1.0)
-        self.notch_freq.setSuffix(" Hz")
-        self.notch_freq.valueChanged.connect(self.update_notch_freq)
-        notch_freq_layout.addWidget(self.notch_freq)
+        # 50Hz checkbox
+        self.notch_50hz = QtWidgets.QCheckBox("50 Hz")
+        self.notch_50hz.setChecked(50.0 in self.signal_processor.notch_freqs)
+        self.notch_50hz.toggled.connect(self.update_notch_freqs)
+        notch_freq_layout.addWidget(self.notch_50hz, 0, 1)
         
-        # Quick buttons
-        notch_freq_layout.addWidget(QtWidgets.QLabel("Quick:"))
+        # 60Hz checkbox
+        self.notch_60hz = QtWidgets.QCheckBox("60 Hz")
+        self.notch_60hz.setChecked(60.0 in self.signal_processor.notch_freqs)
+        self.notch_60hz.toggled.connect(self.update_notch_freqs)
+        notch_freq_layout.addWidget(self.notch_60hz, 0, 2)
         
-        # 50Hz button (EU)
-        btn_50hz = QtWidgets.QPushButton("50Hz")
-        btn_50hz.setMaximumWidth(60)
-        btn_50hz.clicked.connect(lambda: self.set_notch_freq(50.0))
-        notch_freq_layout.addWidget(btn_50hz)
+        # Custom frequency control
+        self.notch_custom_layout = QtWidgets.QHBoxLayout()
+        self.notch_custom_layout.addWidget(QtWidgets.QLabel("Custom:"))
         
-        # 60Hz button (US)
-        btn_60hz = QtWidgets.QPushButton("60Hz")
-        btn_60hz.setMaximumWidth(60)
-        btn_60hz.clicked.connect(lambda: self.set_notch_freq(60.0))
-        notch_freq_layout.addWidget(btn_60hz)
+        self.notch_custom_freq = QtWidgets.QDoubleSpinBox()
+        self.notch_custom_freq.setRange(1.0, 200.0)
+        self.notch_custom_freq.setValue(50.0)
+        self.notch_custom_freq.setSingleStep(1.0)
+        self.notch_custom_freq.setSuffix(" Hz")
+        self.notch_custom_layout.addWidget(self.notch_custom_freq)
+        
+        # Add button for custom frequency
+        btn_add_custom = QtWidgets.QPushButton("Add")
+        btn_add_custom.setMaximumWidth(60)
+        btn_add_custom.clicked.connect(self.add_custom_notch)
+        self.notch_custom_layout.addWidget(btn_add_custom)
+        
+        # Add the custom frequency controls as a new row
+        notch_freq_layout.addLayout(self.notch_custom_layout, 1, 0, 1, 3)
         
         notch_layout.addLayout(notch_freq_layout)
         main_layout.addWidget(notch_group)
@@ -318,30 +327,47 @@ class EEGSettingsMenu(QtWidgets.QWidget):
             
     def toggle_notch_filter(self, checked):
         """Toggle notch filter based on checkbox"""
-        self.signal_processor.notch_enabled = checked
+        self.signal_processor.toggle_notch(checked)
         self.settingsChanged.emit()
         print(f"Notch filter {'enabled' if checked else 'disabled'}")
         
-    def update_notch_freq(self):
-        """Update notch filter frequency"""
-        try:
-            # Get value from spinbox
-            freq = self.notch_freq.value()
+    def update_notch_freqs(self):
+        """Update the notch filter frequencies based on checkboxes"""
+        freqs = []
+        if self.notch_50hz.isChecked():
+            freqs.append(50.0)
+        if self.notch_60hz.isChecked():
+            freqs.append(60.0)
             
-            # Update the processor
-            self.signal_processor.set_notch_freq(freq)
-            self.settingsChanged.emit()
-            print(f"Notch frequency updated: {freq} Hz")
-        except Exception as e:
-            print(f"Error updating notch frequency: {e}")
+        if not freqs:  # If no boxes checked, default to both
+            self.notch_50hz.setChecked(True)
+            self.notch_60hz.setChecked(True)
+            freqs = [50.0, 60.0]
+        
+        # Apply the frequencies
+        self.signal_processor.set_notch_freq(freqs)
+        print(f"Notch filter frequencies set to {freqs} Hz")
+        self.settingsChanged.emit()
+        
+    def add_custom_notch(self):
+        """Add a custom notch filter frequency"""
+        value = self.notch_custom_freq.value()
+        
+        # Get current frequencies
+        current_freqs = []
+        if self.notch_50hz.isChecked():
+            current_freqs.append(50.0)
+        if self.notch_60hz.isChecked():
+            current_freqs.append(60.0)
             
-    def set_notch_freq(self, freq):
-        """Set notch frequency from quick buttons"""
-        try:
-            # Update spinbox (which will trigger update_notch_freq)
-            self.notch_freq.setValue(freq)
-        except Exception as e:
-            print(f"Error setting notch frequency: {e}")
+        # Add the custom frequency if not already present
+        if value not in current_freqs:
+            current_freqs.append(value)
+            
+        # Apply to processor
+        self.signal_processor.set_notch_freq(current_freqs)
+        print(f"Added notch filter at {value} Hz. Active filters: {current_freqs}")
+        self.settingsChanged.emit()
     
     def update_reference_mode(self, button):
         """Update reference mode based on radio button selection"""
@@ -397,7 +423,8 @@ class EEGSettingsMenu(QtWidgets.QWidget):
         self.bp_low.setValue(self.signal_processor.bandpass_low)
         self.bp_high.setValue(self.signal_processor.bandpass_high)
         self.notch_checkbox.setChecked(self.signal_processor.notch_enabled)
-        self.notch_freq.setValue(self.signal_processor.notch_freq)
+        # This is outdated - we now use checkboxes instead of a single frequency value
+        # Old code: self.notch_freq.setValue(self.signal_processor.notch_freq)
         
         # Update reference mode radio buttons
         if self.signal_processor.reference_mode == 'original':

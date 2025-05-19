@@ -15,18 +15,19 @@ class EEGSignalProcessor:
         """
         self.sample_rate = sample_rate
         
-        # Filter settings
-        self.bandpass_enabled = False
+        # Filter settings - enabled by default for 2-channel headset
+        self.bandpass_enabled = True  # Default to enabled
         self.bandpass_low = 1.0   # Hz
         self.bandpass_high = 40.0  # Hz
         
-        self.notch_enabled = False
-        self.notch_freq = 50.0  # Hz (or 60.0 for US)
+        self.notch_enabled = True  # Default to enabled
+        self.notch_freqs = [50.0, 60.0]  # Both 50Hz (Europe/Asia) and 60Hz (US) notch filters enabled
         
         # Reference settings
         self.reference_mode = 'original'  # 'original', 'average', 'linked_ears'
         self.reference_channels = ['A1', 'A2']  # For linked ears
-        self.non_eeg_channels = ['HR', 'sync']  # Channels to exclude from re-referencing
+        self.non_eeg_channels = ['sync', 'Coherence']  # Special channels to exclude from processing
+        self.preserve_from_filter = ['sync', 'Coherence']  # Channels to exclude from filtering (HR should be filtered)
         
     def set_reference_mode(self, mode):
         """Set the referencing mode"""
@@ -94,26 +95,53 @@ class EEGSignalProcessor:
         # Create Raw object from data
         raw = mne.io.RawArray(data, info)
         
-        # Apply bandpass filter if enabled
-        if self.bandpass_enabled:
+        # Identify channels to filter and those to preserve
+        preserve_channel_indices = []
+        filter_channel_indices = []
+        
+        for i, ch in enumerate(channel_names):
+            # Skip filtering for special channels like sync and Coherence
+            if any(special_ch in ch for special_ch in self.preserve_from_filter):
+                preserve_channel_indices.append(i)
+                print(f"Preserving channel from filtering: {ch}")
+            else:
+                filter_channel_indices.append(i)
+        
+        # Store original data for channels that shouldn't be filtered
+        preserved_data = {}
+        for idx in preserve_channel_indices:
+            preserved_data[idx] = raw._data[idx, :].copy()
+        
+        # Apply bandpass filter if enabled (only to EEG channels and HR)
+        if self.bandpass_enabled and filter_channel_indices:
+            print(f"Applying bandpass filter to {len(filter_channel_indices)} channels")
+            # Use picks parameter to only filter selected channels
             raw.filter(
                 l_freq=self.bandpass_low, 
                 h_freq=self.bandpass_high,
-                method='fir',                   # FIR filter has better edge behavior
-                fir_design='firwin',            # Windowed FIR filter design
-                fir_window='hamming',           # Hamming window for smoother transition
-                pad='edge',                     # Edge padding reduces boundary artifacts
+                method='fir',                  # FIR filter has better edge behavior
+                fir_design='firwin',           # Windowed FIR filter design
+                fir_window='hamming',          # Hamming window for smoother transition
+                pad='edge',                    # Edge padding reduces boundary artifacts
+                picks=filter_channel_indices,  # Only apply to EEG channels and HR
                 verbose=False
             )
             
-        # Apply notch filter if enabled
-        if self.notch_enabled:
+        # Apply notch filter if enabled (only to EEG channels and HR)
+        if self.notch_enabled and filter_channel_indices:
+            print(f"Applying notch filters at {self.notch_freqs} Hz to {len(filter_channel_indices)} channels")
+            # Use picks parameter to only filter selected channels
             raw.notch_filter(
-                freqs=self.notch_freq,
-                method='fir',                   # FIR filter has better edge behavior
-                fir_design='firwin',            # Windowed FIR filter design
+                freqs=self.notch_freqs,        # Apply both 50Hz and 60Hz filters
+                method='fir',                  # FIR filter has better edge behavior
+                fir_design='firwin',           # Windowed FIR filter design
+                picks=filter_channel_indices,  # Only apply to EEG channels and HR
                 verbose=False
             )
+            
+        # Restore original data for unfiltered channels
+        for idx, original_data in preserved_data.items():
+            raw._data[idx, :] = original_data
         
         # Apply re-referencing if needed
         if self.reference_mode == 'average':
@@ -267,8 +295,12 @@ class EEGSignalProcessor:
         return self.notch_enabled
         
     def set_notch_freq(self, freq):
-        """Set notch filter frequency"""
-        self.notch_freq = float(freq)
+        """Set notch filter frequency - backwards compatibility for UI"""
+        # Convert to list if single value
+        if isinstance(freq, (int, float)):
+            self.notch_freqs = [float(freq)]
+        else:
+            self.notch_freqs = [float(f) for f in freq]
         
     def set_sample_rate(self, sample_rate):
         """Update the sample rate"""

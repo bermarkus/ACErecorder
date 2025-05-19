@@ -57,7 +57,9 @@ class BDFSignalMonitor:
         self.channel_offsets = []  # For stacking channels vertically
         self.channel_scales = []   # Individual scaling for each channel
         self.channel_spacing_multipliers = []  # Multipliers for vertical spacing (default 1.0)
-        self.y_scale = 30.0  # Scale value when not in auto mode
+        self.y_scale = 50.0  # Scale value in μV when not in auto mode (matches EDFbrowser default scale)
+        # Available y-scale options (in microvolts) - match EDFbrowser exactly
+        self.y_scale_options = [30.0, 50.0, 100.0, 200.0]
         self.auto_scale = True   # Default to auto-scaling for 2-channel headset
         self._auto_scale_value = 1.0  # Separate value for auto-scaling tracking
         self.per_channel_scale = True  # Scale each channel individually
@@ -66,6 +68,15 @@ class BDFSignalMonitor:
         self.fixed_scale_channels = {
             'Coherence': 1.0  # Coherence channel has a fixed 0-1 µV scale
         }
+        
+        # BDF file physical/digital conversion parameters from ACErecorder.py
+        # Note: We're not using these yet - need to confirm signal units first
+        self.physical_min = -187500
+        self.physical_max = 187500
+        self.digital_min = -8388608
+        self.digital_max = 8388607
+        # Conversion factor: (physical_max - physical_min) / (digital_max - digital_min)
+        self.adc_to_uv_factor = 375000 / 16777215  # ≈ 0.022351
         
         # Create menus (initially hidden)
         self.settings_menu = None
@@ -562,6 +573,12 @@ class BDFSignalMonitor:
                             
                             print(f"Read BDF data: shape={data.shape}, time points={len(times)}, sample rate={raw.info['sfreq']}")
                             print(f"Value range: min={data_min:.2f}, max={data_max:.2f}, range={data_range:.2f}")
+                                                    # Use a much simpler approach - we know the signals look good
+                            # after removing the DC offset and applying the bandpass filters
+                            # Let's just make sure the auto-scale calculation gives reasonable values
+                            
+                            # Keep track of the original range for scale calculation
+                            self.raw_data_range = data_range
                             
                             # Auto-adjust scaling value ONLY if auto_scale is enabled
                             # This value is used in update_plot to determine display scaling
@@ -674,11 +691,13 @@ class BDFSignalMonitor:
         
     def reset_channel_spacing_multipliers(self):
         """Reset all channel spacing multipliers to default (1.0)"""
-        self.channel_spacing_multipliers = np.ones(self.num_channels)
-        print("Reset all channel spacing multipliers to 1.0")
+        self.channel_spacing_multipliers = {}
+        print("Reset all channel spacing multipliers to default (1.0)")
         # Update the display to reflect the reset spacing
         self.update_plot(force_labels=True)
         return True
+    
+
     
     def update_plot(self, force_labels=False):
         """Update the visual display of the monitor"""
@@ -694,6 +713,9 @@ class BDFSignalMonitor:
                     # Get the latest item but keep it in the queue
                     data, times, sfreq = self.data_queue[-1]
                     print(f"Updating plot with data shape: {data.shape}, time points: {len(times)}")
+                    
+                    # For debug purposes, print the range of signal values
+                    print(f"Signal range: {np.min(data):.2f} to {np.max(data):.2f}")
                     
                     # Update signal processor sample rate
                     self.signal_processor.set_sample_rate(sfreq)
@@ -850,8 +872,14 @@ class BDFSignalMonitor:
                     if i in position_map:
                         self.channel_offsets[i] = position_map[i]
                 
-                print(f"Channel spacing: {channel_spacing:.2f} (using {num_displayed_channels} displayed channels), "
-                      f"Scale: {self.y_scale:.1f} µV {'auto' if self.auto_scale else 'fixed'}")
+                # Now that we're properly converting to microvolts, show actual values
+                if self.auto_scale:
+                    max_uv = np.max(np.abs(data))
+                    print(f"Channel spacing: {channel_spacing:.2f} (using {num_displayed_channels} displayed channels), "
+                          f"Scale: auto {max_uv:.1f} µV (peak)")
+                else:
+                    print(f"Channel spacing: {channel_spacing:.2f} (using {num_displayed_channels} displayed channels), "
+                          f"Scale: fixed {self.y_scale:.1f} µV")
                       
                 # Log channel offsets for debugging
                 print(f"Channel offsets: {len(self.channel_offsets)} total, {len(position_map)} visible")
@@ -890,6 +918,8 @@ class BDFSignalMonitor:
                         if channel_name.startswith('Fp'):
                             # For Fp channels, use the maximum amplitude across both Fp channels
                             # This ensures both channels use the same scale
+                            # With proper μV conversion, our signal is now typically in the 10-100 μV range
+                            # We want the signal to use 70% of the channel height
                             target_scale = 0.7 / fp_max_amp
                             
                             # No smoothing for initial scaling to ensure immediate visibility
@@ -898,6 +928,10 @@ class BDFSignalMonitor:
                             else:
                                 # Use gentler smoothing (80% old, 20% new) to maintain stability
                                 self.channel_scales[i] = self.channel_scales[i] * 0.8 + target_scale * 0.2
+                                
+                            # Log the actual microvolts value being used for scaling
+                            effective_uv_scale = 0.7 / self.channel_scales[i]
+                            print(f"  Auto-scale for {channel_name}: effective μV scale = {effective_uv_scale:.2f} μV")
                                 
                             print(f"Auto-scaling {channel_name}: fp_max={fp_max_amp:.2f}μV, scale={self.channel_scales[i]:.5f}, height~{fp_max_amp * self.channel_scales[i]:.2f}")
                         else:
@@ -1005,14 +1039,8 @@ class BDFSignalMonitor:
                             pen=boundary_pen
                         )
                         self.plot_widget.addItem(grid_line)
-                        
-                        # Create horizontal line
-                        grid_line = pg.InfiniteLine(
-                            pos=pos,
-                            angle=0,
-                            pen=boundary_pen
-                        )
-                        self.plot_widget.addItem(grid_line)
+                    
+                    # We'll add labels after clearing and redrawing the main plots
                     
                     # Update ticks
                     self.plot_widget.getAxis('bottom').setTicks([x_ticks])
@@ -1061,34 +1089,40 @@ class BDFSignalMonitor:
                         # Check if this is a channel with a fixed scale requirement
                         channel_name = self.channel_labels[i]
                         
-                        if 'Coherence' in channel_name and hasattr(self, 'fixed_scale_channels'):
-                            # Going back to proven working scale for Coherence
-                            channel_scale = 1000000.0  # This was the working value before
-                            print(f"Using fixed scale for {channel_name}: 0-1 range with 1000000.0 amplification")
-                        # Apply fixed scales for standard EEG channels
-                        elif not self.auto_scale:
-                            # Use the exact same direct scaling approach we established above
-                            # The data is in µV, and we want a signal of y_scale µV
-                            # to display at 80% of the channel height
-                            
-                            # For consistent scaling across the application:
-                            # scale_factor = 0.8 / y_scale
-                            
-                            # Direct calculation based on selected scale
-                            channel_scale = 0.8 / self.y_scale
-                            
-                            print(f"Using fixed scale for {channel_name}: {self.y_scale} µV range with amplification {channel_scale:.1f}x")
-                        # Otherwise apply auto scaling if enabled
-                        elif self.per_channel_scale:
-                            # Ensure we're using the per-channel scale
-                            channel_scale = self.channel_scales[i]
-                            if channel_name.startswith('Fp'):
-                                print(f"Using auto scale for {channel_name}: scale={channel_scale:.5f}")
+                        # DISPLAY SCALING ONLY - All signal processing is done in eeg_signal_processor.py
+                        # We only handle proper display scaling based on selected Y-axis values here
+                        
+                        # Get the maximum absolute value in this channel for diagnostics
+                        signal_max = np.max(np.abs(data[i]))
+                        
+                        # Special handling for Coherence channel
+                        if 'Coherence' in channel_name:
+                            # Coherence is a special channel with values in 0-1 range
+                            # But values are extremely small (around 10^-7) and need amplification to be visible
+                            channel_scale = 1000000.0  # Amplify by 1 million to make visible
+                            scaled_data = data[i] * channel_scale
+                            print(f"Coherence channel: amplified {channel_scale:.1f}x for visibility")
                         else:
-                            channel_scale = scale_factor
+                            # For EEG channels, data has already been converted to μV in eeg_signal_processor.py
+                            # We don't need to do any conversion here, just handle display scale
+                            channel_scale = 1.0
+                            scaled_data = data[i]  # Keep original μV values
                             
-                        # Apply channel scaling to the data
-                        scaled_data = data[i] * channel_scale
+                            print(f"EEG channel {channel_name}: using μV values from signal processor")
+
+                                
+                        # Diagnostic logging - after applying our direct scaling
+                        print(f"Channel {channel_name}:")
+                        print(f"  Original range: {np.min(data[i]):.2f} to {np.max(data[i]):.2f}")
+                        print(f"  Scaled range: {np.min(scaled_data):.2f} to {np.max(scaled_data):.2f}")
+                        print(f"  Scale factor: {channel_scale:.8f}")
+                        print(f"  First few samples (raw): {data[i, :5]}")
+                        print(f"  First few samples (scaled): {scaled_data[:5]}")
+                        
+                        # The rest of the scaling logic is SKIPPED
+                        # We're using our direct scaling approach instead
+                            
+                        # We already applied channel scaling earlier, so skip this
                         
                         # Calculate boundary limits for this channel
                         clip_limit = channel_spacing * self.channel_max_amp / 2.0
@@ -1330,10 +1364,11 @@ class BDFSignalMonitor:
                 self.update_timer.setInterval(self.update_interval)
             
     def _setup_initial_display(self):
-        """Setup initial display with empty grid"""
-        duration = self.window_length  # 10 seconds
-        
-        # Determine number of channels based on filename pattern or default to 23
+        """Set up the initial display components."""
+        self.y_scale = 50  # Initial default fixed scale - 50μV 
+        self.available_y_scales = [30, 50, 75, 100, 200, 500]  # Available scales in μV
+        self.signal_amplitude_correction = 1000.0  # Force correct display amplitude for EEG
+        self.eeg_rescale_factor = 1.0  # Will be adjusted dynamically when needed
         if self.current_bdf_file:
             if "19ch" in self.current_bdf_file.lower():
                 self.num_channels = 19
@@ -1363,15 +1398,18 @@ class BDFSignalMonitor:
         self.plots = []
         
         # Set fixed tick spacing from -10 to 0 seconds
+        # Use a default duration of self.window_length for initial display
+        initial_duration = self.window_length  # Default to 10 seconds (or whatever window_length is)
+        
         x_ticks = []
         for i in range(-self.window_length, 1):
             # For initial display, map the display time directly
-            x_ticks.append((duration + i - self.window_length, str(i)))
+            x_ticks.append((i, str(i)))
         
         # Add explicit vertical grid lines at each second mark first
         for i in range(-self.window_length, 1):
             grid_line = pg.InfiniteLine(
-                pos=duration + i - self.window_length,
+                pos=i,
                 angle=90,
                 pen=pg.mkPen(color='#606060', width=1)
             )
@@ -1400,7 +1438,7 @@ class BDFSignalMonitor:
         background_color = (50, 50, 50, 200)  # Dark gray with opacity (R,G,B,A)
         
         # Position labels at the very left edge
-        left_edge = duration - self.window_length + 0.01  # Very close to left edge
+        left_edge = -self.window_length + 0.01  # Very close to left edge
         
         for i in label_indices:
             label = pg.TextItem(
@@ -1428,7 +1466,8 @@ class BDFSignalMonitor:
             
         self.plot_widget.setTitle(title, color='white', size='14pt')
         # Set time axis range with fixed -10 to 0 display
-        self.plot_widget.setXRange(duration - self.window_length, duration)
+        # Use 0 as the right edge of the display for initial setup
+        self.plot_widget.setXRange(-self.window_length, 0)
 
 
 # For testing

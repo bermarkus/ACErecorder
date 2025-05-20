@@ -57,9 +57,9 @@ class BDFSignalMonitor:
         self.channel_offsets = []  # For stacking channels vertically
         self.channel_scales = []   # Individual scaling for each channel
         self.channel_spacing_multipliers = []  # Multipliers for vertical spacing (default 1.0)
-        self.y_scale = 50.0  # Scale value in μV when not in auto mode (matches EDFbrowser default scale)
+        self.y_scale = 30.0  # Scale value in μV when not in auto mode (default for EEG signals)
         # Available y-scale options (in microvolts) - match EDFbrowser exactly
-        self.y_scale_options = [30.0, 50.0, 100.0, 200.0]
+        self.y_scale_options = [30.0, 60.0, 100.0, 200.0]
         self.auto_scale = True   # Default to auto-scaling for 2-channel headset
         self._auto_scale_value = 1.0  # Separate value for auto-scaling tracking
         self.per_channel_scale = True  # Scale each channel individually
@@ -759,19 +759,11 @@ class BDFSignalMonitor:
                 self.plot_widget.clear()
                 self.plots = []
                 
-                # Trim padding from the data window before display
-                # We added extra data at both ends to reduce filter edge effects
-                # Now we need to remove it before displaying
-                filter_padding_samples = int(1.0 * sfreq)  # 1 second padding on each side
-                
-                # Ensure we have enough data to trim
-                if data.shape[1] > 2 * filter_padding_samples:
-                    # Trim the padding from both ends
-                    data = data[:, filter_padding_samples:-filter_padding_samples]
-                    times = times[filter_padding_samples:-filter_padding_samples]
-                    print(f"Trimmed filter padding: data shape now {data.shape}, time points: {len(times)}")
-                else:
-                    print("Warning: Not enough data to trim padding")
+                # IIR filters don't need padding like FIR filters did
+                # We no longer need to add and trim padding, which eliminates the buffer delay
+                # Keep the original data shape with no trimming
+                print(f"Using full data without padding: shape {data.shape}, time points: {len(times)}")
+                # No delay processing needed with IIR filters
                     
                 # ===== Initialize all variables needed for channel display =====
                 # Initialize with default values to prevent any 'referenced before assignment' errors

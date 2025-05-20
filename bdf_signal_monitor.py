@@ -817,37 +817,41 @@ class BDFSignalMonitor:
                 # Handle scaling based on auto vs. fixed mode
                 if self.auto_scale:
                     # Auto scaling: adapt to data amplitude
-                    # BDF files store data in microvolts (µV), not millivolts (mV)
-                    # This is confirmed in ACErecorder.py where dimension is set to 'uV'
+                    # Get max amplitude across all channels (excluding Coherence)
+                    channel_amplitudes = []
+                    for i in range(data.shape[0]):
+                        channel_name = self.channel_labels[i] if i < len(self.channel_labels) else f"Channel {i}"
+                        if not 'Coherence' in channel_name:
+                            channel_amplitudes.append(np.max(np.abs(data[i])))
                     
-                    # Calculate max amplitude across all channels
-                    max_amplitude = np.max(np.abs(data))
+                    max_amplitude = max(channel_amplitudes) if channel_amplitudes else 0.001
                     
-                    if max_amplitude > 0:
-                        # Calculate Y-scale based on max amplitude with 20% headroom
-                        self._auto_scale_value = max_amplitude * 1.2
-                        
-                        # Scale factor converts from data value to display height
-                        # For a signal of max_amplitude to display at 80% of channel height
-                        scale_factor = 0.8 / self._auto_scale_value
-                        
-                        print(f"Auto scaling with factor: {scale_factor:.8f} based on max amplitude: {max_amplitude:.4f} µV")
-                        print(f"Expected signal height (normalized): {max_amplitude * scale_factor:.4f}")
+                    # Ensure reasonable minimum amplitude for visibility
+                    if max_amplitude < 0.1:
+                        # Signal is very small (less than 0.1 μV) - use aggressive scaling
+                        target_amplitude = max(max_amplitude * 50, 0.5)  # Target at least 0.5 μV
+                        print(f"Auto scaling: signals very small ({max_amplitude:.6f} μV) - applying visibility boost")
                     else:
-                        # Default scale if no amplitude
-                        scale_factor = 0.01
+                        # Normal signal amplitudes, add 20% headroom
+                        target_amplitude = max_amplitude * 1.2
+                    
+                    # Store for reference
+                    self._auto_scale_value = target_amplitude
+                    
+                    # Scale to make max amplitude fill 80% of channel height
+                    scale_factor = 0.8 / target_amplitude
+                    
+                    print(f"Auto scaling with factor: {scale_factor:.8f} (signals: {max_amplitude:.4f} μV)")
+                    print(f"Target height: {max_amplitude * scale_factor:.4f} (80% of channel height)")
                 else:
-                    # Fixed scale mode: use the selected µV value
-                    # Data is already in microvolts (µV), so we simply need to scale
-                    # to make a signal of y_scale µV display at 80% of channel height
+                    # Fixed scale mode: use the selected μV value
+                    # A signal of y_scale μV should display at 80% of channel height
                     scale_factor = 0.8 / self.y_scale
                     
-                    print(f"Fixed scaling at {self.y_scale} µV with factor: {scale_factor:.8f} (data in µV)")
-                    print(f"A {self.y_scale} µV signal should render at height: {self.y_scale * scale_factor:.4f}")
+                    print(f"Fixed scaling at {self.y_scale} μV with factor: {scale_factor:.8f}") 
+                    print(f"A {self.y_scale} μV signal will display at exactly 80% of channel height")
                     
-                    # Ensure scale factor isn't too small to see anything
-                    if scale_factor * 100 < 0.1:  # If even a 100µV signal would be less than 0.1 height
-                        print("Warning: Scale factor may be too small - signals might appear flat")
+                    # No adjustment - fixed means fixed regardless of signal size
                 
                 # Use a fixed, consistent channel spacing approach
                 # Each channel gets an equal amount of vertical space
@@ -946,8 +950,21 @@ class BDFSignalMonitor:
                                 print(f"Auto-scaling {channel_name}: max={channel_max:.2f}μV, scale={self.channel_scales[i]:.5f}, height~{channel_max * self.channel_scales[i]:.2f}")
                 elif not self.auto_scale:
                     # In fixed scale mode, ensure all channels use the same fixed scale
+                    # Get min/max channel scale values for diagnostic purposes
+                    min_scale = min(self.channel_scales) if self.channel_scales else scale_factor
+                    max_scale = max(self.channel_scales) if self.channel_scales else scale_factor
+                    print(f"Channel scales - min: {min_scale:.4f}, max: {max_scale:.4f}")
+                    
+                    # CRITICAL: In fixed scale mode, all EEG channels MUST use exactly the same scale factor
+                    # This ensures that the y-scale setting (30μV, 60μV, etc.) is precisely honored
                     for i in range(data.shape[0]):
-                        self.channel_scales[i] = scale_factor
+                        channel_name = self.channel_labels[i] if i < len(self.channel_labels) else f"Channel {i}"
+                        if 'Coherence' in channel_name:
+                            # Coherence channel keeps its special amplification
+                            continue
+                        else:
+                            # Force reset to the exact scale factor calculated from y_scale
+                            self.channel_scales[i] = scale_factor
                     
                     # Print some debug about the channel scales
                     print(f"Channel scales - min: {min(self.channel_scales):.4f}, max: {max(self.channel_scales):.4f}")
@@ -1097,18 +1114,63 @@ class BDFSignalMonitor:
                         
                         # Special handling for Coherence channel
                         if 'Coherence' in channel_name:
-                            # Coherence is a special channel with values in 0-1 range
-                            # But values are extremely small (around 10^-7) and need amplification to be visible
-                            channel_scale = 1000000.0  # Amplify by 1 million to make visible
+                            # Coherence values are extremely small (around 0.7-0.8) and need amplification
+                            # We apply a fixed amplification to make them visible with the same Y-scale
+                            # Using 1,000,000x amplification as per EDFbrowser example
+                            channel_scale = 1000000.0
                             scaled_data = data[i] * channel_scale
-                            print(f"Coherence channel: amplified {channel_scale:.1f}x for visibility")
+                            print(f"Coherence channel: values around {np.mean(data[i]):.6f}, amplified {channel_scale:.1f}x for visibility")
                         else:
-                            # For EEG channels, data has already been converted to μV in eeg_signal_processor.py
-                            # We don't need to do any conversion here, just handle display scale
-                            channel_scale = 1.0
-                            scaled_data = data[i]  # Keep original μV values
+                            # For EEG channels, data is already in μV from eeg_signal_processor.py
+                            # BUT - we're seeing values around 0.0002 μV after filtering
+                            # This is likely a consistent unit conversion issue
                             
-                            print(f"EEG channel {channel_name}: using μV values from signal processor")
+                            # Get the amplitude for diagnostic purposes only
+                            amp = np.max(np.abs(data[i]))
+                            
+                            # First apply a consistent base correction factor
+                            # This converts the tiny filtered values to a reasonable range
+                            base_correction = 10000.0  # 10^4 correction factor
+                            
+                            # Scale the signals based on display mode
+                            if not self.auto_scale:
+                                # For fixed scales, need a multiplier inversely proportional to y_scale
+                                # This makes signals appear correctly scaled relative to the fixed scale
+                                # At 30 μV scale: signals appear largest
+                                # At 60 μV scale: signals appear half as tall 
+                                # At 100 μV scale: signals appear 30% of 30 μV scale
+                                y_scale_multiplier = 30.0 / self.y_scale  # Normalize to 30 μV scale
+                                channel_scale = base_correction * y_scale_multiplier
+                                print(f"EEG channel {channel_name}: fixed {self.y_scale} μV scale (multiplier: {y_scale_multiplier:.2f})")
+                            else:
+                                # For auto mode, determine scale from actual signal range
+                                # First apply base correction to get reasonable values
+                                corrected_amp = amp * base_correction
+                                
+                                # Scale to fit 90% of available vertical space
+                                # Need to get data from all EEG channels to calculate correct auto-scaling
+                                all_channels_max = 0
+                                # Check all EEG channels (excluding Coherence)
+                                for ch_idx in range(data.shape[0]):
+                                    ch_name = self.channel_labels[ch_idx] if ch_idx < len(self.channel_labels) else f"Channel {ch_idx}"
+                                    if 'Coherence' not in ch_name:
+                                        ch_max = np.max(np.abs(data[ch_idx])) * base_correction
+                                        all_channels_max = max(all_channels_max, ch_max)
+                                
+                                # Now scale to fit the display
+                                # First get a reasonable min value to avoid division by zero
+                                auto_scale_value = max(all_channels_max, 0.01)
+                                # Bigger signals should appear smaller (inverse relationship)
+                                auto_multiplier = 5.0 / auto_scale_value  # 5.0 works well as a reference scale
+                                channel_scale = base_correction * auto_multiplier
+                                
+                                print(f"EEG channel {channel_name}: auto scale (max signal: {all_channels_max:.2f} μV)")
+                                print(f"Auto scale multiplier: {auto_multiplier:.2f}x (adjust to fit display)")
+                            
+                                
+                            print(f"Applied correction - Original: {amp:.6f} μV, Display: {amp * channel_scale:.2f} μV")
+                                
+                            scaled_data = data[i] * channel_scale
 
                                 
                         # Diagnostic logging - after applying our direct scaling

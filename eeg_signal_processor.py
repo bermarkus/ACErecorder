@@ -183,37 +183,24 @@ class EEGSignalProcessor:
         # BDF standard calibration:
         # physical_min = -187500 μV, physical_max = 187500 μV (from ACErecorder.py)
         # digital_min = -8388608, digital_max = 8388607 (24-bit ADC values)
-        
         # EDFbrowser approach:
-        # 1. Keep data in raw ADC values during filtering
-        # 2. Convert to physical units (μV) at display time
-        # 3. Let the BDF calibration factors handle the conversion
-        #
-        # MNE-Python's filter can cause scaling issues - we'll normalize when needed
-        # but avoid any unnecessary scaling
+        # 1. Convert ADC to μV once (using physical/digital range)
+        # 2. Apply filters, which naturally removes DC offset 
+        # 3. Present signal with appropriate fixed Y-scale
         
-        # Check if MNE's filtering has severely attenuated signals
-        min_signal = float('inf')
-        for i in filter_channel_indices:
-            max_abs = np.max(np.abs(raw._data[i]))
-            if max_abs < min_signal:
-                min_signal = max_abs
+        # IMPORTANT: Completely disabling any automatic normalization
+        # This ensures signals maintain consistent scale between updates
+        # and fixed Y-scales remain truly fixed
         
-        # Only apply minimal correction if filter has severely attenuated signals
-        # This ensures filter output is in same general range as input but retains proper relationships
-        if min_signal < 0.001 and min_signal > 0:
-            print("Filter normalized signals to very small values - applying minimal correction")
-            
-            # Calculate a small normalization factor to avoid numerical issues
-            # This does NOT attempt to scale to μV - that happens in the display renderer
-            correction_factor = 1.0 / min_signal  # Just bring values back to ~1.0 range
-            
-            # Apply this minimal correction to all filtered channels
-            for i in filter_channel_indices:
-                raw._data[i] = raw._data[i] * correction_factor
-                
-            print(f"Applied minimal normalization factor of {correction_factor:.2f}x")
-            print(f"Let BDF calibration in display handle conversion to μV")
+        # Print information about filtered signal amplitude
+        for i, idx in enumerate(filter_channel_indices):
+            if i < 2:  # Only check the first two channels
+                channel_name = channel_names[idx] if idx < len(channel_names) else f"Channel {idx}"
+                amplitude = np.max(np.abs(raw._data[idx]))
+                print(f"Channel {channel_name} after filtering: amplitude {amplitude:.6f} μV")
+        
+        # Skipping all normalization - let the filters work naturally
+        # This matches EDFbrowser's behavior
         
         # Print diagnostic information about signal amplitudes after filtering
         for i, idx in enumerate(filter_channel_indices):
